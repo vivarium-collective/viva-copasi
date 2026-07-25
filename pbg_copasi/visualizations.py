@@ -6,11 +6,11 @@ each subclass overrides ``update()`` to consume per-step state via wires
 ``{'html': '<rendered figure>'}`` each step.  The composite spec wires
 the input ports to store paths.
 
-See viva_superpowers.visualization for the base-class contract.
+See pbg_superpowers.visualization for the base-class contract.
 """
 from __future__ import annotations
 
-from viva_superpowers.visualization import Visualization
+from pbg_superpowers.visualization import Visualization
 
 
 class SpeciesConcentrationsPlot(Visualization):
