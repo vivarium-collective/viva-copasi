@@ -12,12 +12,16 @@ dependencies = [
     "bigraph-schema",
     "copasi-basico",
     "python-copasi",
-    "pbg-superpowers",
+    "viva-superpowers",
     "pyyaml",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "bigraph-viz", "matplotlib"]
+
+[tool.uv.sources]
+# viva-superpowers (renamed from pbg-superpowers) is git-only, not on PyPI.
+viva-superpowers = { git = "https://github.com/vivarium-collective/viva-superpowers.git", branch = "main" }
 
 [tool.setuptools.packages.find]
 include = ["pbg_copasi*"]
