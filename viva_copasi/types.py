@@ -1,4 +1,4 @@
-"""Custom bigraph-schema types for pbg-copasi.
+"""Custom bigraph-schema types for viva-copasi.
 
 Currently uses built-in types (map[float], list, any, etc.) only.
 This hook exists for future custom type registrations — e.g.

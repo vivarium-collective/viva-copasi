@@ -1,4 +1,4 @@
-# pbg-copasi
+# viva-copasi
 
 process-bigraph-compatible COPASI Steps and Processes for SBML model simulation.
 
@@ -19,10 +19,10 @@ uv pip install -e .
 ```python
 from importlib.resources import files
 from process_bigraph import Composite, gather_emitter_results
-from pbg_copasi.composites import build_composite, register_copasi
+from viva_copasi.composites import build_composite, register_copasi
 
 # Resolve the bundled Repressilator model
-model_path = str(files('pbg_copasi.composites').joinpath('repressilator.xml'))
+model_path = str(files('viva_copasi.composites').joinpath('repressilator.xml'))
 
 # Build and run the incremental UTC process composite
 sim = build_composite('utc-process')
@@ -45,7 +45,7 @@ model file (path or URL).
 
 ## Composites
 
-Three discoverable composites in `pbg_copasi/composites/`:
+Three discoverable composites in `viva_copasi/composites/`:
 
 | Name | Type | Description |
 |---|---|---|
@@ -60,7 +60,7 @@ Each ships with the bundled SBML model
 Load a composite by name:
 
 ```python
-from pbg_copasi.composites import build_composite, list_composite_specs
+from viva_copasi.composites import build_composite, list_composite_specs
 
 print(list_composite_specs())   # ['steady-state', 'utc-process', 'utc-step']
 sim = build_composite('utc-process')
