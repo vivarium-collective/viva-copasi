@@ -23,7 +23,7 @@ import yaml
 from process_bigraph import allocate_core
 from process_bigraph.emitter import RAMEmitter
 
-from pbg_copasi.processes import (
+from viva_copasi.processes import (
     CopasiUTCStep,
     CopasiSteadyStateStep,
     CopasiUTCProcess,
@@ -209,7 +209,7 @@ def register_copasi(core=None):
     core.register_link('RAMEmitter', RAMEmitter)
     core.register_link('ram-emitter', RAMEmitter)
     # Register Visualization Steps so composites can wire them by name.
-    from pbg_copasi.visualizations import SpeciesConcentrationsPlot
+    from viva_copasi.visualizations import SpeciesConcentrationsPlot
     core.register_link('SpeciesConcentrationsPlot', SpeciesConcentrationsPlot)
     return core
 

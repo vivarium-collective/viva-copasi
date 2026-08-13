@@ -1,4 +1,4 @@
-"""Tests for pbg_copasi.processes — UTC Step, SteadyState Step, UTC Process.
+"""Tests for viva_copasi.processes — UTC Step, SteadyState Step, UTC Process.
 
 Ports the logic of biocompose's run_copasi_utc() and run_copasi_ss()
 into proper pytest tests, plus adds coverage for CopasiUTCProcess.
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from process_bigraph import allocate_core
 
-from pbg_copasi.processes import (
+from viva_copasi.processes import (
     BaseCopasi,
     CopasiUTCStep,
     CopasiSteadyStateStep,

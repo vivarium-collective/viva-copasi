@@ -1,4 +1,4 @@
-"""Integration tests for pbg-copasi composite specs.
+"""Integration tests for viva-copasi composite specs.
 
 Tests cover:
 - Discovery: list_composite_specs() returns the three expected names.
@@ -7,7 +7,7 @@ Tests cover:
 - Short run: the UTC process composite advances and emits data.
 
 Test model: Elowitz 2000 Repressilator (BIOMD0000000012), bundled at
-pbg_copasi/composites/repressilator.xml.
+viva_copasi/composites/repressilator.xml.
 """
 from pathlib import Path
 
@@ -15,7 +15,7 @@ import pytest
 from process_bigraph import Composite, allocate_core, gather_emitter_results
 from process_bigraph.emitter import RAMEmitter
 
-from pbg_copasi.composites import (
+from viva_copasi.composites import (
     list_composite_specs,
     load_composite_spec,
     build_composite,
@@ -24,7 +24,7 @@ from pbg_copasi.composites import (
     make_copasi_steady_state_document,
     _COMPOSITES_DIR,
 )
-from pbg_copasi.processes import (
+from viva_copasi.processes import (
     CopasiUTCStep,
     CopasiSteadyStateStep,
     CopasiUTCProcess,

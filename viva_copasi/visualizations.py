@@ -1,4 +1,4 @@
-"""Visualization Step subclasses for pbg-copasi.
+"""Visualization Step subclasses for viva-copasi.
 
 Visualizations follow the pbg-superpowers convention (v0.4+):
 each subclass overrides ``update()`` to consume per-step state via wires

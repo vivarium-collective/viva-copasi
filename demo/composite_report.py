@@ -2,7 +2,7 @@
 
 Demonstrates the pbg-superpowers composite-spec convention end-to-end:
 
-    1. List composite specs shipped with pbg_copasi.
+    1. List composite specs shipped with viva_copasi.
     2. Load one by name; instantiate a process_bigraph.Composite via the
        package's ``build_composite()`` loader.
     3. Drive it forward N steps with ``composite.update()``.
@@ -23,7 +23,7 @@ import tempfile
 
 from process_bigraph import gather_emitter_results
 
-from pbg_copasi.composites import (
+from viva_copasi.composites import (
     _COMPOSITES_DIR,
     build_composite,
     list_composite_specs,
@@ -157,7 +157,7 @@ def main(spec_name: str | None = None, n_steps: int = 20,
     if spec_name is None:
         specs = list_composite_specs()
         if not specs:
-            raise SystemExit("No *.composite.yaml found in pbg_copasi/composites/")
+            raise SystemExit("No *.composite.yaml found in viva_copasi/composites/")
         # Default to utc-process as it produces the richest incremental trajectory
         spec_name = 'utc-process' if 'utc-process' in specs else specs[0]
 
