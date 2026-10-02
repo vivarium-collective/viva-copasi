@@ -200,8 +200,10 @@ def register_copasi(core=None):
     # Register schema types used by COPASI process outputs.
     # 'any' and 'numeric_result' are not in bigraph-schema's BASE_TYPES;
     # registering them as tree aliases allows composite wiring to resolve them.
-    core.register_type('any', {'_inherit': 'tree'})
-    core.register_type('numeric_result', {'_inherit': 'tree'})
+    if 'any' not in core.registry:
+        core.register_type('any', {'_inherit': 'tree'})
+    if 'numeric_result' not in core.registry:
+        core.register_type('numeric_result', {'_inherit': 'tree'})
     # Register process and emitter links.
     core.register_link('CopasiUTCStep', CopasiUTCStep)
     core.register_link('CopasiSteadyStateStep', CopasiSteadyStateStep)
