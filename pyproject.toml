@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "viva-copasi"
 version = "0.1.0"
 description = "process-bigraph-compatible COPASI Steps and Processes (UTC + SteadyState)"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "process-bigraph>=0.0.10",
