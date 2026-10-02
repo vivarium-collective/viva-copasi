@@ -7,6 +7,7 @@ name = "viva-copasi"
 version = "0.1.1"
 description = "process-bigraph-compatible COPASI Steps and Processes (UTC + SteadyState)"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
     "process-bigraph>=1.8.5",
