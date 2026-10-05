@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import Dict, Any
 
@@ -21,16 +22,32 @@ from viva_copasi.parameter_estimation import (
 )
 
 
+# Species-not-found is a warning, not an error: partial updates are legitimate
+# (a config may name species absent from a given model). warnings.warn (rather
+# than print) surfaces through a workbench worker's warning capture instead of
+# vanishing to stdout.
+
+
 def _model_path_resolution(model_source: str) -> str:
     """Resolve a model reference to a loadable path or URL.
 
     URLs pass through unchanged; relative paths resolve against Path.cwd().
+    Raises FileNotFoundError (naming the resolved path and cwd) if a file path
+    does not exist, rather than letting load_model silently return None.
     """
     if model_source.startswith(('http://', 'https://')):
         return model_source
     p = Path(model_source)
+    cwd = Path.cwd()
     if not p.is_absolute():
-        p = Path.cwd() / p
+        p = cwd / p
+    if not p.exists():
+        raise FileNotFoundError(
+            f"COPASI/SBML model not found: model_source={model_source!r} "
+            f"resolved to {str(p)!r} (cwd={str(cwd)!r}). "
+            f"Pass an absolute path or a path relative to the current "
+            f"working directory ({cwd})."
+        )
     return str(p)
 
 
@@ -47,7 +64,7 @@ def _set_initial_concentrations(changes, dm):
     for name, value in changes:
         species = model.getMetabolite(name)
         if species is None:
-            print(f"Species {name} not found in model")
+            warnings.warn(f"Species {name} not found in model; skipping")
             continue
         assert isinstance(species, COPASI.CMetab)
         species.setInitialConcentration(float(value))
@@ -66,7 +83,7 @@ def _get_transient_concentration(name, dm):
 
     species = model.getMetabolite(name)
     if species is None:
-        print(f"Species {name} not found in model")
+        warnings.warn(f"Species {name} not found in model; returning None")
         return None
     assert isinstance(species, COPASI.CMetab)
     return float(species.getConcentration())
@@ -83,10 +100,12 @@ class BaseCopasi:
         model_source = self.config['model_source']
 
         # ---- Load COPASI model ----
-        self.dm = load_model(_model_path_resolution(model_source))
+        resolved = _model_path_resolution(model_source)
+        self.dm = load_model(resolved)
         if self.dm is None:
             raise RuntimeError(
-                f"load_model({model_source!r}) returned None. "
+                f"load_model({model_source!r}) returned None (resolved path: "
+                f"{resolved!r}). "
                 "Check that the file exists and is a valid COPASI/SBML model."
             )
 

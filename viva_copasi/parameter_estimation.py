@@ -49,8 +49,16 @@ def _resolve_model_source(model_source: str) -> str:
     if model_source.startswith(('http://', 'https://')):
         return model_source
     p = Path(model_source)
+    cwd = Path.cwd()
     if not p.is_absolute():
-        p = Path.cwd() / p
+        p = cwd / p
+    if not p.exists():
+        raise FileNotFoundError(
+            f"COPASI/SBML model not found: model_source={model_source!r} "
+            f"resolved to {str(p)!r} (cwd={str(cwd)!r}). "
+            f"Pass an absolute path or a path relative to the current "
+            f"working directory ({cwd})."
+        )
     return str(p)
 
 
@@ -61,10 +69,12 @@ def _as_datamodel(model: Union[str, Any]):
     already-loaded DataModel object, which is returned unchanged.
     """
     if isinstance(model, str):
-        dm = basico.load_model(_resolve_model_source(model))
+        resolved = _resolve_model_source(model)
+        dm = basico.load_model(resolved)
         if dm is None:
             raise RuntimeError(
-                f"load_model({model!r}) returned None. "
+                f"load_model({model!r}) returned None (resolved path: "
+                f"{resolved!r}). "
                 "Check that the file exists and is a valid COPASI/SBML model."
             )
         return dm
