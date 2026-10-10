@@ -355,6 +355,20 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
         # the steady-state task.
         'relative_tolerance': 'maybe[float]',
         'criterion': 'maybe[string]',
+        # Remaining Steady-State task options (#19). Each maps to one setting of
+        # the COPASI "Enhanced Newton" steady-state method (names as returned by
+        # basico.get_task_settings(T.STEADY_STATE)['method']). Absent (None) ->
+        # COPASI's default for that setting, so the default run is unchanged.
+        # These names are engine-specific (Enhanced Newton); the tellurium
+        # sibling (#15) exposes its own roadrunner steady-state options.
+        'derivation_factor': 'maybe[float]',               # 'Derivation Factor'
+        'iteration_limit': 'maybe[integer]',               # 'Iteration Limit'
+        'use_newton': 'maybe[boolean]',                    # 'Use Newton'
+        'use_integration': 'maybe[boolean]',               # 'Use Integration'
+        'use_back_integration': 'maybe[boolean]',          # 'Use Back Integration'
+        'accept_negative_concentrations': 'maybe[boolean]',  # 'Accept Negative Concentrations'
+        'forward_integration_duration': 'maybe[float]',    # 'Maximum duration for forward integration'
+        'backward_integration_duration': 'maybe[float]',   # 'Maximum duration for backward integration'
         # Output selection (#17): list of element identifiers whose steady-state
         # values to report, e.g. ['[LacI protein]', '(reaction).Flux']. Absent/
         # empty keeps the current behavior. Same key name and list shape as the
@@ -371,14 +385,38 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
     def initialize(self, config=None):
         self.interpret_sbml()
 
+    # (config key, Enhanced-Newton method setting name, cast) for the
+    # steady-state options exposed in #19. Resolution and Target Criterion are
+    # the pre-existing relative_tolerance/criterion keys (#14) and handled below.
+    _SS_METHOD_OPTIONS = (
+        ('derivation_factor', 'Derivation Factor', float),
+        ('iteration_limit', 'Iteration Limit', int),
+        ('use_newton', 'Use Newton', bool),
+        ('use_integration', 'Use Integration', bool),
+        ('use_back_integration', 'Use Back Integration', bool),
+        ('accept_negative_concentrations', 'Accept Negative Concentrations', bool),
+        ('forward_integration_duration',
+         'Maximum duration for forward integration', float),
+        ('backward_integration_duration',
+         'Maximum duration for backward integration', float),
+    )
+
     def steadystate_option_kwargs(self) -> Dict[str, Any]:
         """Translate steady-state config keys into basico ``run_steadystate``
         kwargs. Unset (None) keys are omitted so COPASI's defaults apply."""
         kw: Dict[str, Any] = {}
+        method: Dict[str, Any] = {}
         r_tol = self.config.get('relative_tolerance')
         if r_tol is not None:
             # Enhanced Newton acceptance resolution, in get_task_settings form.
-            kw['settings'] = {'method': {'Resolution': float(r_tol)}}
+            method['Resolution'] = float(r_tol)
+        # Remaining Enhanced-Newton method options (#19).
+        for cfg_key, setting_name, cast in self._SS_METHOD_OPTIONS:
+            val = self.config.get(cfg_key)
+            if val is not None:
+                method[setting_name] = cast(val)
+        if method:
+            kw['settings'] = {'method': method}
         criterion = self.config.get('criterion')
         if criterion:
             kw['criterion'] = criterion

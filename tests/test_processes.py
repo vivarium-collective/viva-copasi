@@ -321,6 +321,81 @@ def test_copasi_steady_state_applies_resolution_and_criterion(core):
 
 
 # ---------------------------------------------------------------------------
+# Issue #19 — remaining steady-state (Enhanced Newton) options
+# ---------------------------------------------------------------------------
+
+def test_copasi_steady_state_defaults_leave_method_options(core):
+    """With no #19 keys set, the step leaves the model's stored Enhanced-Newton
+    method settings untouched."""
+    from basico import load_model
+
+    baseline = load_model(TEST_MODEL)
+    before = get_task_settings(T.STEADY_STATE, model=baseline)['method']
+
+    step = CopasiSteadyStateStep(
+        config={'model_source': TEST_MODEL},
+        core=core,
+    )
+    step.update({})
+    method = get_task_settings(T.STEADY_STATE, model=step.dm)['method']
+    for key in (
+        'Derivation Factor', 'Iteration Limit', 'Use Newton', 'Use Integration',
+        'Use Back Integration', 'Accept Negative Concentrations',
+        'Maximum duration for forward integration',
+        'Maximum duration for backward integration',
+    ):
+        assert method[key] == before[key]
+
+
+def test_copasi_steady_state_applies_method_options(core):
+    """Each #19 key is applied to the Enhanced-Newton method settings."""
+    step = CopasiSteadyStateStep(
+        config={
+            'model_source': TEST_MODEL,
+            'derivation_factor': 1e-4,
+            'iteration_limit': 77,
+            'use_newton': False,
+            'use_integration': True,
+            'use_back_integration': True,
+            'accept_negative_concentrations': True,
+            'forward_integration_duration': 5e8,
+            'backward_integration_duration': 2e5,
+        },
+        core=core,
+    )
+    step.update({})
+    method = get_task_settings(T.STEADY_STATE, model=step.dm)['method']
+    assert method['Derivation Factor'] == pytest.approx(1e-4)
+    assert method['Iteration Limit'] == 77
+    assert method['Use Newton'] is False
+    assert method['Use Integration'] is True
+    assert method['Use Back Integration'] is True
+    assert method['Accept Negative Concentrations'] is True
+    assert method['Maximum duration for forward integration'] == pytest.approx(5e8)
+    assert method['Maximum duration for backward integration'] == pytest.approx(2e5)
+
+
+def test_copasi_steady_state_options_coexist_with_tolerance_and_criterion(core):
+    """#19 options apply alongside #14's relative_tolerance/criterion."""
+    step = CopasiSteadyStateStep(
+        config={
+            'model_source': TEST_MODEL,
+            'relative_tolerance': 1e-3,
+            'criterion': 'Distance',
+            'iteration_limit': 42,
+            'use_integration': True,
+        },
+        core=core,
+    )
+    step.update({})
+    method = get_task_settings(T.STEADY_STATE, model=step.dm)['method']
+    assert method['Resolution'] == pytest.approx(1e-3)
+    assert method['Target Criterion'] == 'Distance'
+    assert method['Iteration Limit'] == 42
+    assert method['Use Integration'] is True
+
+
+# ---------------------------------------------------------------------------
 # Issue #17 — output selection (choose the reported columns/elements)
 # ---------------------------------------------------------------------------
 # Repressilator (BIOMD0000000012) COPASI display names, used as selection
