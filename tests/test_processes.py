@@ -22,6 +22,10 @@ from viva_copasi.processes import (
 # Repressilator model — resolved relative to this file so tests run from any cwd.
 TEST_MODEL = str(Path(__file__).parent / 'fixtures' / 'BIOMD0000000012_url.xml')
 
+# Issue #18 model: non-unit compartment volume (5) + a hasOnlySubstanceUnits
+# species (S2), so concentration and amount differ and are distinguishable.
+UNITS_MODEL = str(Path(__file__).parent / 'fixtures' / 'units_amount_conc.xml')
+
 
 @pytest.fixture
 def core():
@@ -403,3 +407,112 @@ def test_copasi_steady_state_selections_reports_values(core):
     # One-element list per element (matches species_concentrations/fluxes shape).
     assert len(results['selections'][_SEL_SPECIES]) == 1
     assert isinstance(results['selections'][_SEL_SPECIES][0], float)
+
+
+# ---------------------------------------------------------------------------
+# Issue #18 — species_units: concentration vs amount for the default species
+# output. COPASI reports a species' bare name ("S1") as particle count but
+# "[S1]" as concentration, and which one the default output uses depends on the
+# species' hasOnlySubstanceUnits flag. The wrapper hides this: species_units
+# ('concentration' | 'amount', default 'concentration') forces the default
+# species output into one consistent kind for every species. Explicit
+# `selections` are left verbatim and are unaffected. Same key name/semantics as
+# the viva-tellurium sibling (#14).
+# ---------------------------------------------------------------------------
+
+def _units_ground_truth():
+    """(concentration, amount) of the hasOnlySubstanceUnits species S2 at t=0,
+    read straight from basico so the test asserts against COPASI's own numbers
+    rather than hard-coded constants."""
+    import basico
+    dm = basico.load_model(UNITS_MODEL)
+    dm.getModel().compileIfNecessary()
+    sp = basico.get_species(model=dm)
+    row = sp.loc[sp['sbml_id'] == 'S2'].iloc[0]
+    return float(row['concentration']), float(row['particle_number'])
+
+
+def test_copasi_utc_step_default_species_units_is_concentration(core):
+    """Default (no species_units) reports concentration — the prior behavior."""
+    conc, amount = _units_ground_truth()
+    assert conc != pytest.approx(amount)  # volume != 1: the two are distinct
+
+    step = CopasiUTCStep(
+        config={'model_source': UNITS_MODEL, 'time': 5.0, 'n_points': 2},
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    s2 = out['columns'].index('S2')
+    assert out['values'][0][s2] == pytest.approx(conc)
+
+
+def test_copasi_utc_step_species_units_concentration_explicit(core):
+    """species_units='concentration' reports the concentration of a
+    hasOnlySubstanceUnits species (not its particle count)."""
+    conc, amount = _units_ground_truth()
+    step = CopasiUTCStep(
+        config={
+            'model_source': UNITS_MODEL, 'time': 5.0, 'n_points': 2,
+            'species_units': 'concentration',
+        },
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    s2 = out['columns'].index('S2')
+    assert out['values'][0][s2] == pytest.approx(conc)
+
+
+def test_copasi_utc_step_species_units_amount(core):
+    """species_units='amount' reports the particle count/amount of the same
+    species — the conversion is observable because the compartment volume != 1."""
+    conc, amount = _units_ground_truth()
+    step = CopasiUTCStep(
+        config={
+            'model_source': UNITS_MODEL, 'time': 5.0, 'n_points': 2,
+            'species_units': 'amount',
+        },
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    s2 = out['columns'].index('S2')
+    assert out['values'][0][s2] == pytest.approx(amount)
+    assert out['values'][0][s2] != pytest.approx(conc)
+
+
+def test_copasi_steady_state_species_units_amount(core):
+    """SteadyStateStep honors species_units for the default species output."""
+    conc, amount = _units_ground_truth()
+
+    ss_conc = CopasiSteadyStateStep(
+        config={'model_source': UNITS_MODEL}, core=core,
+    ).update({})['results']['species_concentrations']
+    ss_amount = CopasiSteadyStateStep(
+        config={'model_source': UNITS_MODEL, 'species_units': 'amount'},
+        core=core,
+    ).update({})['results']['species_concentrations']
+
+    # At steady state the absolute values differ, but amount/concentration must
+    # equal the fixed volume*Avogadro factor COPASI applies to S2 — proving the
+    # 'amount' path returns particle number, not concentration.
+    ratio = amount / conc
+    assert ss_amount['S2'][0] / ss_conc['S2'][0] == pytest.approx(ratio, rel=1e-6)
+    assert ss_amount['S2'][0] != pytest.approx(ss_conc['S2'][0])
+
+
+def test_copasi_utc_step_selections_ignore_species_units(core):
+    """Explicit `selections` are left VERBATIM: species_units does not rewrite
+    or re-unit them (#17/#18 interaction)."""
+    step = CopasiUTCStep(
+        config={
+            'model_source': UNITS_MODEL, 'time': 5.0, 'n_points': 2,
+            'selections': ['Time', '[S2]'],
+            'species_units': 'amount',
+        },
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    # The requested column is reported exactly as asked, and '[S2]' is a
+    # concentration selection — amount policy must not have touched it.
+    conc, amount = _units_ground_truth()
+    assert out['columns'] == ['[S2]']
+    assert out['values'][0][0] == pytest.approx(conc)
