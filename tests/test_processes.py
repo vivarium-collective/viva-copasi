@@ -314,3 +314,92 @@ def test_copasi_steady_state_applies_resolution_and_criterion(core):
     method = get_task_settings(T.STEADY_STATE, model=step.dm)['method']
     assert method['Resolution'] == pytest.approx(1e-3)
     assert method['Target Criterion'] == 'Distance'
+
+
+# ---------------------------------------------------------------------------
+# Issue #17 — output selection (choose the reported columns/elements)
+# ---------------------------------------------------------------------------
+# Repressilator (BIOMD0000000012) COPASI display names, used as selection
+# strings. These mirror what viva-biomodels builds for the COPASI engine.
+_SEL_SPECIES = '[LacI protein]'
+_SEL_FLUX = '(degradation of LacI transcripts).Flux'
+
+
+def test_copasi_utc_step_default_output_unchanged(core):
+    """Absent `selections` keeps the default species+parameter output (#17)."""
+    step = CopasiUTCStep(
+        config={'model_source': TEST_MODEL, 'time': 5.0, 'n_points': 6},
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    # Default path reports SBML-id columns (species + parameters) and starts at 0.
+    assert 'PX' in out['columns']
+    assert out['time'][0] == 0.0
+    assert len(out['time']) == 6
+
+
+def test_copasi_utc_step_selections_restricts_columns(core):
+    """`selections` yields exactly those output columns, in order (#17)."""
+    step = CopasiUTCStep(
+        config={
+            'model_source': TEST_MODEL,
+            'time': 5.0,
+            'n_points': 6,
+            'selections': ['Time', _SEL_SPECIES, _SEL_FLUX],
+        },
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    # 'Time' is lifted into out['time']; the rest become the output columns.
+    assert out['columns'] == [_SEL_SPECIES, _SEL_FLUX]
+    assert len(out['time']) == 6
+    assert len(out['values']) == 6
+    assert all(len(row) == 2 for row in out['values'])
+    # A reaction flux is a non-default element now reported because it was asked
+    # for — the behavior the default output could not provide.
+    assert _SEL_FLUX in out['columns']
+
+
+def test_copasi_utc_step_selections_honor_start_time(core):
+    """`selections` still honors other options, e.g. start_time (#17 + #13)."""
+    step = CopasiUTCStep(
+        config={
+            'model_source': TEST_MODEL,
+            'time': 5.0,
+            'n_points': 6,
+            'start_time': 2.0,
+            'selections': ['Time', _SEL_SPECIES],
+        },
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    assert out['time'][0] == pytest.approx(2.0)
+    assert out['columns'] == [_SEL_SPECIES]
+
+
+def test_copasi_steady_state_default_has_no_selections_key(core):
+    """Absent `selections` leaves the steady-state output unchanged (#17)."""
+    step = CopasiSteadyStateStep(
+        config={'model_source': TEST_MODEL},
+        core=core,
+    )
+    results = step.update({})['results']
+    assert 'selections' not in results
+    assert 'species_concentrations' in results
+    assert 'fluxes' in results
+
+
+def test_copasi_steady_state_selections_reports_values(core):
+    """`selections` reports each requested element's steady-state value (#17)."""
+    step = CopasiSteadyStateStep(
+        config={
+            'model_source': TEST_MODEL,
+            'selections': [_SEL_SPECIES, _SEL_FLUX],
+        },
+        core=core,
+    )
+    results = step.update({})['results']
+    assert set(results['selections']) == {_SEL_SPECIES, _SEL_FLUX}
+    # One-element list per element (matches species_concentrations/fluxes shape).
+    assert len(results['selections'][_SEL_SPECIES]) == 1
+    assert isinstance(results['selections'][_SEL_SPECIES][0], float)

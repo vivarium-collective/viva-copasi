@@ -11,7 +11,9 @@ from basico import (
     get_species,
     get_reactions,
     run_time_course,
+    run_time_course_with_output,
     run_steadystate,
+    get_value,
     set_parameters,
 )
 
@@ -185,6 +187,13 @@ class CopasiUTCStep(Step, BaseCopasi):
         'relative_tolerance': 'maybe[float]',
         'absolute_tolerance': 'maybe[float]',
         'step_size': 'maybe[float]',
+        # Output selection (#17): list of element identifiers to report, e.g.
+        # ['Time', '[LacI protein]', '(reaction).Flux']. Absent/empty keeps the
+        # current behavior (basico's default species+parameter output). Same key
+        # name and list shape as the tellurium wrapper's `selections` (#13); the
+        # identifier vocabulary is COPASI's (display names / CNs), analogous to
+        # how `method` uses COPASI's vocabulary while the key name is shared.
+        'selections': 'maybe[list[string]]',
     }
 
     def initialize(self, config=None):
@@ -227,6 +236,36 @@ class CopasiUTCStep(Step, BaseCopasi):
         if changes:
             _set_initial_concentrations(changes, self.dm)
 
+        selections = self.config.get('selections') or None
+
+        if selections:
+            # Output selection (#17): report exactly the requested elements via
+            # basico's output_selection path. The selection strings are COPASI
+            # display names / CNs (e.g. 'Time', '[species]', '(reaction).Flux').
+            # run_time_course_with_output returns 'Time' as a regular column
+            # (not the index) and does not take use_sbml_id.
+            tc: DataFrame = run_time_course_with_output(
+                output_selection=list(selections),
+                start_time=self.start_time,
+                duration=self.config['time'],
+                intervals=self.intervals,
+                update_model=True,
+                model=self.dm,
+                **self.timecourse_option_kwargs(),
+            )
+            if 'Time' in tc.columns:
+                time_list = tc['Time'].to_list()
+                columns = [c for c in tc.columns if c != 'Time']
+            else:
+                time_list = tc.index.to_list()
+                columns = [c for c in tc.columns]
+            result = {
+                "time": time_list,
+                "columns": columns,
+                "values": tc[columns].values.tolist(),
+            }
+            return {"result": result}
+
         # --- Run COPASI time course with intervals = n_points - 1 ---
         tc: DataFrame = run_time_course(
             start_time=self.start_time,
@@ -264,6 +303,13 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
         # the steady-state task.
         'relative_tolerance': 'maybe[float]',
         'criterion': 'maybe[string]',
+        # Output selection (#17): list of element identifiers whose steady-state
+        # values to report, e.g. ['[LacI protein]', '(reaction).Flux']. Absent/
+        # empty keeps the current behavior. Same key name and list shape as the
+        # tellurium wrapper's `selections` (#13); the identifiers are COPASI
+        # display names / CNs. basico has no steady-state output_selection, so
+        # each element's steady-state value is read back via basico.get_value.
+        'selections': 'maybe[list[string]]',
     }
 
     def initialize(self, config=None):
@@ -362,6 +408,19 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
             "species_concentrations": species_json,  # SBML IDs as keys
             "fluxes": flux_json,
         }
+
+        # Output selection (#17): report the steady-state value of each
+        # requested element. Keyed by the selection string, each value is a
+        # one-element list to match the one-point "time series" convention used
+        # by species_concentrations / fluxes above. Only added when requested,
+        # so the default output is unchanged.
+        selections = self.config.get('selections') or None
+        if selections:
+            selection_json = {}
+            for sel in selections:
+                v = get_value(sel, model=self.dm)
+                selection_json[sel] = [float(v)] if v is not None else [None]
+            results["selections"] = selection_json
 
         return {"results": results}
 
