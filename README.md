@@ -82,7 +82,13 @@ sim = build_composite('utc-step', overrides={
 
 One-shot UTC trajectory.
 
-Config: `model_source` (str), `time` (float, default 1.0), `n_points` (int, default 2).
+Config: `model_source` (str), `time` (float, default 1.0), `n_points` (int, default 2),
+`species_units` (`'concentration'` | `'amount'`, default `'concentration'`).
+
+`species_units` sets the units of the default species output: `'concentration'`
+(the prior behavior) or `'amount'` (particle number). It hides COPASI's bare-name
+(particle count) vs `[name]` (concentration) split so every species is reported
+consistently. Explicit `selections` are reported verbatim and are unaffected.
 
 Outputs: `result` — dict with keys `time` (list), `columns` (list), `values` (list of rows).
 
@@ -90,7 +96,8 @@ Outputs: `result` — dict with keys `time` (list), `columns` (list), `values` (
 
 Incremental UTC simulation.
 
-Config: `model_source` (str), `time` (float, default 1.0), `intervals` (int, default 10).
+Config: `model_source` (str), `time` (float, default 1.0), `intervals` (int, default 10),
+`species_units` (`'concentration'` | `'amount'`, default `'concentration'`).
 
 Outputs: `species_concentrations` (map[float]), `fluxes` (map[float]), `time` (list[float]).
 
@@ -98,7 +105,8 @@ Outputs: `species_concentrations` (map[float]), `fluxes` (map[float]), `time` (l
 
 Steady-state solve.
 
-Config: `model_source` (str).
+Config: `model_source` (str),
+`species_units` (`'concentration'` | `'amount'`, default `'concentration'`).
 
 Outputs: `results` — dict with keys `time`, `species_concentrations`, `fluxes`.
 

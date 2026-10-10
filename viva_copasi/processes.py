@@ -91,6 +91,36 @@ def _get_transient_concentration(name, dm):
     return float(species.getConcentration())
 
 
+def _get_transient_amount(name, dm):
+    """Return the *current* amount (particle number, in the model's quantity
+    units) of a species. COPASI's particle number already folds in the
+    compartment volume, so this is concentration * volume (times the quantity
+    unit's Avogadro factor) — see issue #18."""
+    model = dm.getModel()
+    assert isinstance(model, COPASI.CModel)
+
+    species = model.getMetabolite(name)
+    if species is None:
+        warnings.warn(f"Species {name} not found in model; returning None")
+        return None
+    assert isinstance(species, COPASI.CMetab)
+    return float(species.getValue())
+
+
+# Issue #18: COPASI reports a species' bare name ("S1") as particle count but
+# "[S1]" as concentration, and which one its *default* output uses tracks the
+# species' SBML hasOnlySubstanceUnits flag — so a model's default species output
+# can silently mix concentrations and particle counts. The wrapper hides this:
+# the `species_units` config key forces the default species output into one kind
+# for every species. COPASI exposes both quantities directly (concentration vs
+# particle-number reference), each already accounting for compartment volume, so
+# the wrapper selects the reference explicitly rather than reading the per-species
+# flag. Same key name / semantics as the viva-tellurium sibling (#14).
+SPECIES_UNITS_CONCENTRATION = 'concentration'
+SPECIES_UNITS_AMOUNT = 'amount'
+_VALID_SPECIES_UNITS = (SPECIES_UNITS_CONCENTRATION, SPECIES_UNITS_AMOUNT)
+
+
 class BaseCopasi:
     cmodel = None
     dm = None
@@ -138,6 +168,18 @@ class BaseCopasi:
                 for sbml_id in self.species_ids
             }
         }
+
+    def species_units(self) -> str:
+        """The default-species-output unit policy (#18): 'concentration'
+        (default) or 'amount'. Validated so a typo fails loudly rather than
+        silently falling back."""
+        units = self.config.get('species_units') or SPECIES_UNITS_CONCENTRATION
+        if units not in _VALID_SPECIES_UNITS:
+            raise ValueError(
+                f"species_units={units!r} is invalid; expected one of "
+                f"{_VALID_SPECIES_UNITS}."
+            )
+        return units
 
     def timecourse_option_kwargs(self) -> Dict[str, Any]:
         """Translate the simulation-option config keys into basico
@@ -194,6 +236,11 @@ class CopasiUTCStep(Step, BaseCopasi):
         # identifier vocabulary is COPASI's (display names / CNs), analogous to
         # how `method` uses COPASI's vocabulary while the key name is shared.
         'selections': 'maybe[list[string]]',
+        # Units for the default species output (#18): 'concentration' (default,
+        # prior behavior) or 'amount' (particle number). Ignored when explicit
+        # `selections` are given — those are reported verbatim. Same key name /
+        # semantics as the viva-tellurium sibling (#14).
+        'species_units': {'_type': 'string', '_default': SPECIES_UNITS_CONCENTRATION},
     }
 
     def initialize(self, config=None):
@@ -267,12 +314,17 @@ class CopasiUTCStep(Step, BaseCopasi):
             return {"result": result}
 
         # --- Run COPASI time course with intervals = n_points - 1 ---
+        # species_units (#18): concentration (basico default) vs amount
+        # (particle number). use_concentrations=False makes basico return the
+        # particle-number data for species columns; global-quantity columns are
+        # unaffected (their value is the same either way).
         tc: DataFrame = run_time_course(
             start_time=self.start_time,
             duration=self.config['time'],
             intervals=self.intervals,
             update_model=True,
             use_sbml_id=True,
+            use_concentrations=(self.species_units() == SPECIES_UNITS_CONCENTRATION),
             model=self.dm,
             **self.timecourse_option_kwargs(),
         )
@@ -310,6 +362,10 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
         # display names / CNs. basico has no steady-state output_selection, so
         # each element's steady-state value is read back via basico.get_value.
         'selections': 'maybe[list[string]]',
+        # Units for the default species output (#18): 'concentration' (default,
+        # prior behavior) or 'amount' (particle number). Applies to the
+        # `species_concentrations` values; explicit `selections` are verbatim.
+        'species_units': {'_type': 'string', '_default': SPECIES_UNITS_CONCENTRATION},
     }
 
     def initialize(self, config=None):
@@ -380,14 +436,22 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
             **self.steadystate_option_kwargs(),
         )
 
-        # 3) Read back steady-state species concentrations (SBML IDs externally)
+        # 3) Read back steady-state species values (SBML IDs externally).
+        # species_units (#18): 'concentration' -> the 'concentration' column;
+        # 'amount' -> the 'particle_number' column (amount, volume-aware).
         spec_df = get_species(model=self.dm)
-        # spec_df is indexed by COPASI name, with 'sbml_id' and 'concentration' columns
+        # spec_df is indexed by COPASI name, with 'sbml_id', 'concentration'
+        # and 'particle_number' columns.
+        value_col = (
+            "concentration"
+            if self.species_units() == SPECIES_UNITS_CONCENTRATION
+            else "particle_number"
+        )
         species_conc_ss = {}
         for name in spec_df.index:
             sbml_id = spec_df.loc[name, "sbml_id"]
             if sbml_id in self.species_ids:
-                species_conc_ss[sbml_id] = float(spec_df.loc[name, "concentration"])
+                species_conc_ss[sbml_id] = float(spec_df.loc[name, value_col])
 
         # 4) Steady-state reaction fluxes
         rxn_df = get_reactions(model=self.dm)
@@ -438,6 +502,10 @@ class CopasiUTCProcess(Process, BaseCopasi):
         'relative_tolerance': 'maybe[float]',
         'absolute_tolerance': 'maybe[float]',
         'step_size': 'maybe[float]',
+        # Units for the species_concentrations output (#18): 'concentration'
+        # (default, prior behavior) or 'amount' (particle number). Same key name
+        # / semantics as the viva-tellurium sibling (#14).
+        'species_units': {'_type': 'string', '_default': SPECIES_UNITS_CONCENTRATION},
     }
 
     def initialize(self, config=None):
@@ -508,8 +576,14 @@ class CopasiUTCProcess(Process, BaseCopasi):
         time = tc.index.tolist()
 
         # --- 3) Read back final state: export SBML IDs ----
+        # species_units (#18): concentration (default) vs amount (particle no.).
+        read = (
+            _get_transient_concentration
+            if self.species_units() == SPECIES_UNITS_CONCENTRATION
+            else _get_transient_amount
+        )
         species_concentrations = {
-            sbml_id: _get_transient_concentration(
+            sbml_id: read(
                 name=self.sbml_to_name[sbml_id],
                 dm=self.dm
             )
