@@ -26,6 +26,13 @@ TEST_MODEL = str(Path(__file__).parent / 'fixtures' / 'BIOMD0000000012_url.xml')
 # species (S2), so concentration and amount differ and are distinguishable.
 UNITS_MODEL = str(Path(__file__).parent / 'fixtures' / 'units_amount_conc.xml')
 
+# Issue #27 model: a valid ODE model with NO species — only a parameter driven
+# by a rate rule (dy/dt = 3). basico's get_species returns None for it.
+NO_SPECIES_MODEL = str(Path(__file__).parent / 'fixtures' / 'no_species.xml')
+
+# Issue #28 model: a one-species exponential decay (dS/dt = -k*S, k=0.5).
+DECAY_MODEL = str(Path(__file__).parent / 'fixtures' / 'decay.xml')
+
 
 @pytest.fixture
 def core():
@@ -697,3 +704,99 @@ def test_copasi_utc_step_selections_ignore_species_units(core):
     conc, amount = _units_ground_truth()
     assert out['columns'] == ['[S2]']
     assert out['values'][0][0] == pytest.approx(conc)
+
+
+# ---------------------------------------------------------------------------
+# Issue #27 — a model with NO species must not crash. basico's get_species
+# returns None for a valid ODE model that has only parameters + rate rules;
+# interpret_sbml() must treat that as an empty species set and carry on.
+# ---------------------------------------------------------------------------
+
+def test_copasi_utc_step_no_species_model_loads(core):
+    """A rate-rule-only model (no species) loads without TypeError (#27)."""
+    step = CopasiUTCStep(
+        config={'model_source': NO_SPECIES_MODEL, 'time': 1.0, 'n_points': 3},
+        core=core,
+    )
+    # No species -> empty species set, not a crash.
+    assert step.species_ids == []
+    assert step.initial_state()['species_concentrations'] == {}
+
+
+def test_copasi_utc_step_no_species_model_runs(core):
+    """The no-species model still runs a time course and returns a result (#27)."""
+    step = CopasiUTCStep(
+        config={'model_source': NO_SPECIES_MODEL, 'time': 1.0, 'n_points': 3},
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    assert len(out['time']) == 3
+    # The rate-rule variable y (dy/dt=3, y0=5) should reach y=8 at t=1.
+    assert 'y' in out['columns']
+    y = out['columns'].index('y')
+    assert out['values'][-1][y] == pytest.approx(8.0, rel=1e-4)
+
+
+def test_copasi_steady_state_step_no_species_model_loads(core):
+    """SteadyStateStep shares interpret_sbml, so it also tolerates no species (#27)."""
+    step = CopasiSteadyStateStep(
+        config={'model_source': NO_SPECIES_MODEL},
+        core=core,
+    )
+    assert step.species_ids == []
+
+
+# ---------------------------------------------------------------------------
+# Issue #28 — the UTC Step must be idempotent: a zero-time Step is a pure
+# function of its inputs, so firing update() twice with the same inputs must
+# return the same trajectory (it previously continued from the prior end-state).
+# ---------------------------------------------------------------------------
+
+def test_copasi_utc_step_is_idempotent(core):
+    """Two identical updates return identical trajectories (#28)."""
+    step = CopasiUTCStep(
+        config={'model_source': DECAY_MODEL, 'time': 5.0, 'n_points': 2},
+        core=core,
+    )
+    a = step.update({'species_counts': {}})['result']['values'][-1]
+    b = step.update({'species_counts': {}})['result']['values'][-1]
+    assert a == pytest.approx(b)
+
+
+def test_copasi_utc_step_idempotent_with_selections(core):
+    """Idempotency holds on the selections path too (#28)."""
+    step = CopasiUTCStep(
+        config={
+            'model_source': DECAY_MODEL, 'time': 5.0, 'n_points': 2,
+            'selections': ['Time', '[S]'],
+        },
+        core=core,
+    )
+    a = step.update({'species_counts': {}})['result']['values'][-1]
+    b = step.update({'species_counts': {}})['result']['values'][-1]
+    assert a == pytest.approx(b)
+
+
+def test_copasi_steady_state_step_is_idempotent(core):
+    """SteadyStateStep returns the same steady state on repeated firings (#28)."""
+    step = CopasiSteadyStateStep(
+        config={'model_source': TEST_MODEL},
+        core=core,
+    )
+    a = step.update({})['results']['species_concentrations']
+    b = step.update({})['results']['species_concentrations']
+    for sid in a:
+        assert a[sid][0] == pytest.approx(b[sid][0])
+
+
+def test_copasi_utc_process_remains_stateful(core):
+    """The Process variant is intentionally stateful across intervals: its
+    reset-on-update must NOT be applied here (#28 guard)."""
+    proc = CopasiUTCProcess(
+        config={'model_source': DECAY_MODEL, 'time': 5.0, 'intervals': 1},
+        core=core,
+    )
+    first = proc.update(proc.initial_state(), interval=5.0)['species_concentrations']['S']
+    second = proc.update({}, interval=5.0)['species_concentrations']['S']
+    # Decay continues from the previous end-state, so the second update is lower.
+    assert second < first

@@ -162,3 +162,68 @@ def test_steady_state_composite_runs(core):
 
     ss_stores = sim.state['ss_stores']
     assert 'results' in ss_stores
+
+
+# ---------------------------------------------------------------------------
+# Issue #25 — a document using the COPASI steps must load under the documented
+# build_core() core. The step output types ('numeric_result', 'any') are not in
+# bigraph-schema's BASE_TYPES; build_core() must register them (as register_copasi
+# does) so composite wiring resolves instead of failing with a confusing
+# "TypeError: 'str' object does not support item assignment".
+# ---------------------------------------------------------------------------
+
+def test_build_core_registers_output_types():
+    """build_core() registers the step output schema types (#25)."""
+    from viva_copasi.core import build_core
+
+    core = build_core()
+    assert 'numeric_result' in core.registry
+    assert 'any' in core.registry
+
+
+def test_build_core_loads_utc_step_document():
+    """A CopasiUTCStep document loads under build_core() without error (#25)."""
+    from process_bigraph import Composite
+    from viva_copasi.core import build_core
+
+    model = str(_COMPOSITES_DIR / "repressilator.xml")
+    doc = {
+        "state": {
+            "w": {
+                "_type": "step",
+                "address": "local:!viva_copasi.processes.CopasiUTCStep",
+                "config": {"model_source": model, "time": 5.0, "n_points": 6},
+                "inputs": {
+                    "species_concentrations": ["a"],
+                    "species_counts": ["b"],
+                },
+                "outputs": {"result": ["r"]},
+            }
+        }
+    }
+    sim = Composite(doc, core=build_core())
+    assert isinstance(sim, Composite)
+
+
+def test_build_core_loads_steady_state_document():
+    """A CopasiSteadyStateStep document (output type 'any') loads too (#25)."""
+    from process_bigraph import Composite
+    from viva_copasi.core import build_core
+
+    model = str(_COMPOSITES_DIR / "repressilator.xml")
+    doc = {
+        "state": {
+            "ss": {
+                "_type": "step",
+                "address": "local:!viva_copasi.processes.CopasiSteadyStateStep",
+                "config": {"model_source": model, "time": 0.0},
+                "inputs": {
+                    "species_concentrations": ["a"],
+                    "counts": ["b"],
+                },
+                "outputs": {"results": ["r"]},
+            }
+        }
+    }
+    sim = Composite(doc, core=build_core())
+    assert isinstance(sim, Composite)
