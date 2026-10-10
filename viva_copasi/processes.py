@@ -137,6 +137,40 @@ class BaseCopasi:
             }
         }
 
+    def timecourse_option_kwargs(self) -> Dict[str, Any]:
+        """Translate the simulation-option config keys into basico
+        ``run_time_course`` kwargs.
+
+        Keys left unset (None) are omitted so basico applies its own defaults,
+        preserving the previous behavior when no options are supplied.
+
+        Key vocabulary (shared with the tellurium wrapper where the concept
+        exists):
+
+        * ``method``             -> ``method``  (basico method name, e.g.
+          ``deterministic``/``lsoda``, ``stochastic``, ``directMethod`` ...).
+          Tellurium calls the analogous key ``integrator`` (``cvode``/
+          ``gillespie``); COPASI's native term is ``method``, matching basico
+          and the existing ``ParameterEstimationStep``.
+        * ``relative_tolerance`` -> ``r_tol``   (matches tellurium's key name)
+        * ``absolute_tolerance`` -> ``a_tol``   (matches tellurium's key name)
+        * ``step_size``          -> ``stepsize`` (output step size)
+        """
+        kw: Dict[str, Any] = {}
+        method = self.config.get('method')
+        if method:
+            kw['method'] = method
+        r_tol = self.config.get('relative_tolerance')
+        if r_tol is not None:
+            kw['r_tol'] = float(r_tol)
+        a_tol = self.config.get('absolute_tolerance')
+        if a_tol is not None:
+            kw['a_tol'] = float(a_tol)
+        step_size = self.config.get('step_size')
+        if step_size is not None:
+            kw['stepsize'] = float(step_size)
+        return kw
+
 
 class CopasiUTCStep(Step, BaseCopasi):
 
@@ -144,6 +178,13 @@ class CopasiUTCStep(Step, BaseCopasi):
         'model_source': 'string',
         'time': 'float',
         'n_points': 'integer',
+        # Output start time; default 0.0 preserves prior behavior (#13).
+        'start_time': {'_type': 'float', '_default': 0.0},
+        # Simulation options; absent (None) -> basico defaults (#14).
+        'method': 'maybe[string]',
+        'relative_tolerance': 'maybe[float]',
+        'absolute_tolerance': 'maybe[float]',
+        'step_size': 'maybe[float]',
     }
 
     def initialize(self, config=None):
@@ -156,6 +197,9 @@ class CopasiUTCStep(Step, BaseCopasi):
             raise ValueError("n_points must be >= 2")
 
         self.intervals = self.n_points - 1   # COPASI requires this
+
+        # Output start time (#13): honor config, default 0.0.
+        self.start_time = float(self.config.get('start_time') or 0.0)
 
     def initial_state(self) -> Dict[str, Any]:
         return self.get_concentrations_from_sbml()
@@ -185,12 +229,13 @@ class CopasiUTCStep(Step, BaseCopasi):
 
         # --- Run COPASI time course with intervals = n_points - 1 ---
         tc: DataFrame = run_time_course(
-            start_time=0.0,
+            start_time=self.start_time,
             duration=self.config['time'],
             intervals=self.intervals,
             update_model=True,
             use_sbml_id=True,
             model=self.dm,
+            **self.timecourse_option_kwargs(),
         )
 
         # Time series
@@ -211,10 +256,31 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
     config_schema = {
         'model_source': 'string',
         'time': 'float',  # kept for symmetry, not used
+        # Steady-state options; absent (None) -> basico/COPASI defaults (#14).
+        # relative_tolerance maps to the Enhanced Newton method's acceptance
+        # 'Resolution'; criterion is the acceptance 'Target Criterion'
+        # ('Distance and Rate' | 'Distance' | 'Rate'). The time-course-only
+        # options (method name, absolute_tolerance, step_size) do not apply to
+        # the steady-state task.
+        'relative_tolerance': 'maybe[float]',
+        'criterion': 'maybe[string]',
     }
 
     def initialize(self, config=None):
         self.interpret_sbml()
+
+    def steadystate_option_kwargs(self) -> Dict[str, Any]:
+        """Translate steady-state config keys into basico ``run_steadystate``
+        kwargs. Unset (None) keys are omitted so COPASI's defaults apply."""
+        kw: Dict[str, Any] = {}
+        r_tol = self.config.get('relative_tolerance')
+        if r_tol is not None:
+            # Enhanced Newton acceptance resolution, in get_task_settings form.
+            kw['settings'] = {'method': {'Resolution': float(r_tol)}}
+        criterion = self.config.get('criterion')
+        if criterion:
+            kw['criterion'] = criterion
+        return kw
 
     # ------------------------------------------------
     # initial state (SBML IDs externally)
@@ -265,6 +331,7 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
             update_model=True,
             use_sbml_id=True,
             model=self.dm,
+            **self.steadystate_option_kwargs(),
         )
 
         # 3) Read back steady-state species concentrations (SBML IDs externally)
@@ -305,6 +372,13 @@ class CopasiUTCProcess(Process, BaseCopasi):
         'model_source': 'string',
         'time': 'float',
         'intervals': 'integer',
+        # Output start time; default 0.0 preserves prior behavior (#13).
+        'start_time': {'_type': 'float', '_default': 0.0},
+        # Simulation options; absent (None) -> basico defaults (#14).
+        'method': 'maybe[string]',
+        'relative_tolerance': 'maybe[float]',
+        'absolute_tolerance': 'maybe[float]',
+        'step_size': 'maybe[float]',
     }
 
     def initialize(self, config=None):
@@ -313,6 +387,9 @@ class CopasiUTCProcess(Process, BaseCopasi):
         # ---- Sim parameters ----
         self.time = float(self.config.get("time", 1.0))
         self.intervals = int(self.config.get("intervals", 10))
+
+        # Output start time (#13): honor config, default 0.0.
+        self.start_time = float(self.config.get('start_time') or 0.0)
 
     # -----------------------------------------------------------------
     # initial state
@@ -359,12 +436,13 @@ class CopasiUTCProcess(Process, BaseCopasi):
 
         # --- 2) Run time course with SBML-ID columns ----
         tc = run_time_course(
-            start_time=0.0,
+            start_time=self.start_time,
             duration=interval,
             intervals=self.intervals,
             update_model=True,
             use_sbml_id=True,   # <-- critical
             model=self.dm,
+            **self.timecourse_option_kwargs(),
         )
 
         # Extract time points
