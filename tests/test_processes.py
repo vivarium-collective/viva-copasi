@@ -485,6 +485,112 @@ def test_copasi_steady_state_selections_reports_values(core):
 
 
 # ---------------------------------------------------------------------------
+# Issue #15 — model_source may be raw SBML text, not just a URL/path. Mirrors
+# the issue's repro: CopasiUTCStep({'model_source': open(...).read(), ...}).
+# ---------------------------------------------------------------------------
+
+def test_copasi_utc_step_accepts_sbml_text_as_model_source(core):
+    """Raw SBML text as model_source loads and runs (no FileNotFoundError, #15)."""
+    sbml_text = Path(TEST_MODEL).read_text(encoding='utf-8')
+    step = CopasiUTCStep(
+        config={'model_source': sbml_text, 'time': 5.0, 'n_points': 6},
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    assert len(out['time']) == 6
+    assert len(out['columns']) > 0
+
+
+def test_copasi_utc_step_path_still_works_unchanged(core):
+    """A path model_source still loads and runs exactly as before (#15)."""
+    step = CopasiUTCStep(
+        config={'model_source': TEST_MODEL, 'time': 5.0, 'n_points': 6},
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    assert len(out['time']) == 6
+
+
+def test_copasi_steady_state_accepts_sbml_text(core):
+    """SteadyStateStep shares the loader, so it also accepts raw SBML text (#15)."""
+    sbml_text = Path(TEST_MODEL).read_text(encoding='utf-8')
+    step = CopasiSteadyStateStep(config={'model_source': sbml_text}, core=core)
+    results = step.update({})['results']
+    assert 'species_concentrations' in results
+
+
+# ---------------------------------------------------------------------------
+# Issue #16 — non-uniform output: output_times gives output at explicit points.
+# Same key name/shape as the viva-tellurium sibling (#11). When set it overrides
+# the uniform start_time/time/n_points path via basico's `values=` argument.
+# ---------------------------------------------------------------------------
+
+def test_copasi_utc_step_output_times_exact_points(core):
+    """`output_times` yields rows at exactly the requested times (#16)."""
+    times = [0.0, 0.1, 0.5, 2.0]
+    step = CopasiUTCStep(
+        config={
+            'model_source': TEST_MODEL,
+            'output_times': times,
+        },
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    assert out['time'] == pytest.approx(times)
+    assert len(out['values']) == len(times)
+    # Default species+parameter output is still produced (SBML-id columns).
+    assert len(out['columns']) > 0
+
+
+def test_copasi_utc_step_output_times_overrides_uniform(core):
+    """`output_times` overrides start_time/time/n_points when both are given."""
+    times = [0.0, 0.25, 1.0, 3.0, 7.0]
+    step = CopasiUTCStep(
+        config={
+            'model_source': TEST_MODEL,
+            'time': 5.0,          # would give a uniform grid...
+            'n_points': 6,        # ...of 6 points ending at 5.0
+            'start_time': 2.0,
+            'output_times': times,  # ...but output_times wins
+        },
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    assert out['time'] == pytest.approx(times)
+    assert len(out['values']) == len(times)
+
+
+def test_copasi_utc_step_output_times_composes_with_selections(core):
+    """`output_times` composes with `selections` (#16 + #17): exact times AND
+    exactly the requested columns."""
+    times = [0.0, 0.1, 0.5, 2.0]
+    step = CopasiUTCStep(
+        config={
+            'model_source': TEST_MODEL,
+            'output_times': times,
+            'selections': ['Time', _SEL_SPECIES, _SEL_FLUX],
+        },
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    assert out['time'] == pytest.approx(times)
+    assert out['columns'] == [_SEL_SPECIES, _SEL_FLUX]
+    assert all(len(row) == 2 for row in out['values'])
+
+
+def test_copasi_utc_step_default_output_unchanged_without_output_times(core):
+    """Absent `output_times`, the uniform path is unchanged (no regression)."""
+    step = CopasiUTCStep(
+        config={'model_source': TEST_MODEL, 'time': 5.0, 'n_points': 6},
+        core=core,
+    )
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})['result']
+    assert out['time'][0] == 0.0
+    assert out['time'][-1] == pytest.approx(5.0)
+    assert len(out['time']) == 6
+
+
+# ---------------------------------------------------------------------------
 # Issue #18 — species_units: concentration vs amount for the default species
 # output. COPASI reports a species' bare name ("S1") as particle count but
 # "[S1]" as concentration, and which one the default output uses depends on the
