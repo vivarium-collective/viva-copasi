@@ -168,7 +168,6 @@ class BaseCopasi:
     cmodel = None
     dm = None
     species_ids = None
-    reaction_ids = None
     sbml_to_name = None
 
     def interpret_sbml(self):
@@ -198,11 +197,16 @@ class BaseCopasi:
                 for name in spec_df.index
             }
 
-        # Likewise, a model with no reactions (e.g. the rate-rule-only model
-        # above) yields None from get_reactions (#27).
-        rxn_df = get_reactions(model=self.dm)
-        # These are typically SBML reaction ids already
-        self.reaction_ids = [] if rxn_df is None else rxn_df.index.tolist()
+        # Reaction ids are NOT fetched here. basico.get_reactions ->
+        # get_reaction_mapping (COPASI.CReactionInterface) segfaults when
+        # libroadrunner (tellurium) was imported first in the same process:
+        # the two packages each statically link their own libSBML build, and
+        # on Linux's flat symbol namespace the second-loaded copy binds to the
+        # first's incompatible symbols (#26). CopasiUTCStep never needs
+        # reaction data, so calling get_reactions in the shared load path
+        # crashed it for nothing. The flux-reporting variants fetch reactions
+        # lazily inside update() instead (where they already re-call
+        # get_reactions), so interpret_sbml stays on the crash-free path.
 
         # Snapshot the model's configured initial state so the zero-time Step
         # variants can reset to it before each firing (#28). Captured here, used
@@ -614,13 +618,16 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
             if sbml_id in self.species_ids:
                 species_conc_ss[sbml_id] = float(spec_df.loc[name, value_col])
 
-        # 4) Steady-state reaction fluxes
+        # 4) Steady-state reaction fluxes.
+        # Reaction ids come straight from the frame we fetch here (a model may
+        # legitimately have no reactions -> None, #27), not from a value cached
+        # at load time (#26).
         rxn_df = get_reactions(model=self.dm)
-        reaction_fluxes_ss = {
-            rid: float(rxn_df.loc[rid, 'flux'])
-            for rid in self.reaction_ids
-            if rid in rxn_df.index
-        }
+        reaction_fluxes_ss = (
+            {}
+            if rxn_df is None
+            else {rid: float(rxn_df.loc[rid, 'flux']) for rid in rxn_df.index}
+        )
 
         # 5) Package as one-point "time series" (t = 0.0) to match Tellurium
         time_list = [0.0]
@@ -752,11 +759,16 @@ class CopasiUTCProcess(Process, BaseCopasi):
         }
 
         # --- 4) Reaction fluxes (COPASI reaction IDs already match SBML IDs) ----
+        # Ids come from the frame fetched here, not a load-time cache (#26, #27).
         rxn_df = get_reactions(model=self.dm)
-        reaction_fluxes = {
-            rxn_id: float(rxn_df.loc[rxn_id, "flux"])
-            for rxn_id in self.reaction_ids
-        }
+        reaction_fluxes = (
+            {}
+            if rxn_df is None
+            else {
+                rxn_id: float(rxn_df.loc[rxn_id, "flux"])
+                for rxn_id in rxn_df.index
+            }
+        )
 
         return {
             "species_concentrations": species_concentrations,
