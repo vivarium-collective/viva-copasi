@@ -15,7 +15,9 @@ from basico import (
     run_time_course_with_output,
     run_steadystate,
     get_value,
+    get_parameters,
     set_parameters,
+    set_species,
 )
 
 from viva_copasi.parameter_estimation import (
@@ -178,20 +180,34 @@ class BaseCopasi:
 
         self.cmodel = self.dm.getModel()
 
+        # A valid ODE model may have NO species (only parameters + rate rules),
+        # in which case basico's get_species returns None rather than an empty
+        # frame (#27). Treat that as an empty species set and carry on instead
+        # of indexing None (which raised TypeError: 'NoneType' is not
+        # subscriptable).
         spec_df = get_species(model=self.dm)
+        if spec_df is None:
+            self.species_ids = []
+            self.sbml_to_name = {}
+        else:
+            # External canonical IDs: SBML IDs
+            self.species_ids = spec_df["sbml_id"].tolist()
+            # Mapping: SBML ID -> COPASI display name (index)
+            self.sbml_to_name = {
+                spec_df.loc[name, "sbml_id"]: name
+                for name in spec_df.index
+            }
 
-        # External canonical IDs: SBML IDs
-        self.species_ids = spec_df["sbml_id"].tolist()
-
-        # Mapping: SBML ID -> COPASI display name (index)
-        self.sbml_to_name = {
-            spec_df.loc[name, "sbml_id"]: name
-            for name in spec_df.index
-        }
-
+        # Likewise, a model with no reactions (e.g. the rate-rule-only model
+        # above) yields None from get_reactions (#27).
         rxn_df = get_reactions(model=self.dm)
         # These are typically SBML reaction ids already
-        self.reaction_ids = rxn_df.index.tolist()
+        self.reaction_ids = [] if rxn_df is None else rxn_df.index.tolist()
+
+        # Snapshot the model's configured initial state so the zero-time Step
+        # variants can reset to it before each firing (#28). Captured here, used
+        # only by the Steps' reset — the stateful Process variant never resets.
+        self._snapshot_initial_state()
 
     def get_concentrations_from_sbml(self) -> Dict[str, Any]:
         return {
@@ -203,6 +219,47 @@ class BaseCopasi:
                 for sbml_id in self.species_ids
             }
         }
+
+    def _snapshot_initial_state(self) -> None:
+        """Record the model's configured initial values right after loading, so
+        a zero-time Step can restore them before each firing (#28).
+
+        Captures the initial concentration of every species and the initial
+        value of every global quantity (covers rate-rule-driven parameters, like
+        the no-species model in #27). Reaction/compartment edge cases are out of
+        scope; these two cover the stateful quantities COPASI advances in a time
+        course."""
+        sp = get_species(model=self.dm)
+        self._initial_species = (
+            {}
+            if sp is None
+            else {
+                name: float(sp.loc[name, "initial_concentration"])
+                for name in sp.index
+            }
+        )
+        gq = get_parameters(model=self.dm)
+        self._initial_globals = (
+            {}
+            if gq is None
+            else {
+                name: float(gq.loc[name, "initial_value"])
+                for name in gq.index
+            }
+        )
+
+    def _reset_to_initial_state(self) -> None:
+        """Restore the initial values snapshotted in :meth:`_snapshot_initial_state`.
+
+        Makes a zero-time Step a pure function of its inputs: without this, a
+        prior ``run_time_course(update_model=True)`` leaves the model's initial
+        state at the previous end-state and the next firing continues from there
+        (#28). Called at the start of each Step ``update()``; the time-coupled
+        Process variant deliberately does not call it."""
+        for name, value in getattr(self, "_initial_species", {}).items():
+            set_species(name=name, exact=True, initial_concentration=value, model=self.dm)
+        for name, value in getattr(self, "_initial_globals", {}).items():
+            set_parameters(name=name, exact=True, initial_value=value, model=self.dm)
 
     def species_units(self) -> str:
         """The default-species-output unit policy (#18): 'concentration'
@@ -318,6 +375,11 @@ class CopasiUTCStep(Step, BaseCopasi):
         }
 
     def update(self, inputs):
+        # A zero-time Step is a pure function of its inputs: reset the model to
+        # its configured initial state so each firing starts fresh, rather than
+        # continuing from the previous run's end-state (#28).
+        self._reset_to_initial_state()
+
         # Apply incoming concentrations
         spec_data = inputs.get('species_counts', {}) or {}
         changes = [
@@ -503,6 +565,12 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
     # steady-state update
     # ------------------------------------------------
     def update(self, inputs):
+        # Zero-time Step: reset to the configured initial state so repeated
+        # firings are a pure function of the inputs (#28). run_steadystate with
+        # update_model=True otherwise leaves the model at the solved state, so a
+        # prior solve could seed the next one.
+        self._reset_to_initial_state()
+
         # 1) Prefer counts, otherwise concentrations (keys are SBML IDs)
         spec_data = (
             inputs.get('counts')
