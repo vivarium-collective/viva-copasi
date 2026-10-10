@@ -8,6 +8,7 @@ from process_bigraph import Process, Step
 import COPASI
 from basico import (
     load_model,
+    load_model_from_string,
     get_species,
     get_reactions,
     run_time_course,
@@ -51,6 +52,46 @@ def _model_path_resolution(model_source: str) -> str:
             f"working directory ({cwd})."
         )
     return str(p)
+
+
+def _looks_like_model_content(model_source: str) -> bool:
+    """True when ``model_source`` is raw model TEXT (SBML or COPASI XML) rather
+    than a filesystem path or URL (#15).
+
+    COPASI and SBML documents are XML, so their first non-whitespace character
+    is always ``<`` (e.g. ``<?xml``, ``<sbml``, ``<COPASI``). No filesystem path
+    or http(s) URL begins that way, so a leading ``<`` unambiguously marks model
+    content — including multiline SBML passed via ``open(...).read()``.
+    """
+    return isinstance(model_source, str) and model_source.lstrip().startswith('<')
+
+
+def _load_model_source(model_source: str):
+    """Load a COPASI/SBML model from either raw model text or a path/URL (#15).
+
+    Raw model content (detected by a leading ``<``) is loaded with basico's
+    string loader ``load_model_from_string``; anything else is resolved as a
+    path/URL via :func:`_model_path_resolution` (preserving the prior behavior,
+    including the FileNotFoundError on a missing path) and loaded from disk/URL.
+    Returns the loaded ``COPASI.CDataModel``; raises if loading yields None.
+    """
+    if _looks_like_model_content(model_source):
+        dm = load_model_from_string(model_source)
+        if dm is None:
+            raise RuntimeError(
+                "load_model_from_string(...) returned None; the provided "
+                "model_source text is not a valid COPASI/SBML model."
+            )
+        return dm
+    resolved = _model_path_resolution(model_source)
+    dm = load_model(resolved)
+    if dm is None:
+        raise RuntimeError(
+            f"load_model({model_source!r}) returned None (resolved path: "
+            f"{resolved!r}). "
+            "Check that the file exists and is a valid COPASI/SBML model."
+        )
+    return dm
 
 
 def _set_initial_concentrations(changes, dm):
@@ -132,14 +173,8 @@ class BaseCopasi:
         model_source = self.config['model_source']
 
         # ---- Load COPASI model ----
-        resolved = _model_path_resolution(model_source)
-        self.dm = load_model(resolved)
-        if self.dm is None:
-            raise RuntimeError(
-                f"load_model({model_source!r}) returned None (resolved path: "
-                f"{resolved!r}). "
-                "Check that the file exists and is a valid COPASI/SBML model."
-            )
+        # model_source may be a path/URL or raw SBML/COPASI model text (#15).
+        self.dm = _load_model_source(model_source)
 
         self.cmodel = self.dm.getModel()
 
@@ -224,6 +259,12 @@ class CopasiUTCStep(Step, BaseCopasi):
         'n_points': 'integer',
         # Output start time; default 0.0 preserves prior behavior (#13).
         'start_time': {'_type': 'float', '_default': 0.0},
+        # Explicit output time points (#16): when set, the time course reports
+        # output at exactly these times (via basico's `values=` argument),
+        # overriding the uniform start_time/time/n_points path. Absent (None)
+        # keeps the current uniform behavior. Same key name and list shape as the
+        # viva-tellurium sibling (#11).
+        'output_times': 'maybe[list[float]]',
         # Simulation options; absent (None) -> basico defaults (#14).
         'method': 'maybe[string]',
         'relative_tolerance': 'maybe[float]',
@@ -249,7 +290,12 @@ class CopasiUTCStep(Step, BaseCopasi):
         # Simulation parameters
         self.interval = float(self.config.get('time', 1.0))
         self.n_points = int(self.config.get('n_points', 2))   # <-- NEW
-        if self.n_points < 2:
+
+        # Explicit output time points (#16). When given, they drive output and
+        # the uniform n_points requirement does not apply.
+        self.output_times = list(self.config.get('output_times') or [])
+
+        if not self.output_times and self.n_points < 2:
             raise ValueError("n_points must be >= 2")
 
         self.intervals = self.n_points - 1   # COPASI requires this
@@ -285,6 +331,19 @@ class CopasiUTCStep(Step, BaseCopasi):
 
         selections = self.config.get('selections') or None
 
+        # Time-span kwargs (#16): explicit `output_times` collect output at
+        # exactly those points via basico's `values=`, overriding the uniform
+        # start_time/duration/intervals path. Absent -> the uniform path,
+        # unchanged.
+        if self.output_times:
+            time_kwargs = {'values': [float(t) for t in self.output_times]}
+        else:
+            time_kwargs = {
+                'start_time': self.start_time,
+                'duration': self.config['time'],
+                'intervals': self.intervals,
+            }
+
         if selections:
             # Output selection (#17): report exactly the requested elements via
             # basico's output_selection path. The selection strings are COPASI
@@ -293,11 +352,9 @@ class CopasiUTCStep(Step, BaseCopasi):
             # (not the index) and does not take use_sbml_id.
             tc: DataFrame = run_time_course_with_output(
                 output_selection=list(selections),
-                start_time=self.start_time,
-                duration=self.config['time'],
-                intervals=self.intervals,
                 update_model=True,
                 model=self.dm,
+                **time_kwargs,
                 **self.timecourse_option_kwargs(),
             )
             if 'Time' in tc.columns:
@@ -319,13 +376,11 @@ class CopasiUTCStep(Step, BaseCopasi):
         # particle-number data for species columns; global-quantity columns are
         # unaffected (their value is the same either way).
         tc: DataFrame = run_time_course(
-            start_time=self.start_time,
-            duration=self.config['time'],
-            intervals=self.intervals,
             update_model=True,
             use_sbml_id=True,
             use_concentrations=(self.species_units() == SPECIES_UNITS_CONCENTRATION),
             model=self.dm,
+            **time_kwargs,
             **self.timecourse_option_kwargs(),
         )
 
@@ -704,7 +759,8 @@ class ParameterEstimationStep(Step, BaseCopasi):
         # reference source is given, else simulate from the (as-yet-unperturbed)
         # fit model so its file/default parameters act as ground truth.
         if self.reference_model_source is not None:
-            ref_dm = load_model(_model_path_resolution(self.reference_model_source))
+            # Accepts a path/URL or raw model text, like model_source (#15).
+            ref_dm = _load_model_source(self.reference_model_source)
         else:
             ref_dm = self.dm
         tc = run_time_course(
