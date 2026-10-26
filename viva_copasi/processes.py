@@ -658,6 +658,19 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
 
 
 class CopasiUTCProcess(Process, BaseCopasi):
+    """Incremental (uniform-time-course) COPASI simulation as a per-tick Process.
+
+    Fast by default — do NOT wrap basico's high-level ``set_species`` /
+    ``get_species`` around this. Each ``update()`` writes incoming species with
+    the low-level COPASI API (``CMetab.setInitialConcentration`` + a single
+    ``model.updateInitialValues(...)`` state-sync — see
+    ``_set_initial_concentrations``) and reads them back with per-metabolite
+    ``getConcentration()``. That path is ~500x faster than calling
+    ``basico.set_species`` / ``get_species`` per name in a loop (which rebuilds a
+    DataFrame through the global-model indirection every call), and is the
+    reason the set/get marshalling is a minority (~1/4) of an ``update()`` — the
+    COPASI solve dominates. There is no slower "default" mode to opt out of.
+    """
 
     config_schema = {
         'model_source': 'string',

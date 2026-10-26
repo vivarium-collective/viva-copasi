@@ -96,6 +96,15 @@ Outputs: `result` — dict with keys `time` (list), `columns` (list), `values` (
 
 Incremental UTC simulation.
 
+**Fast species binding by default.** Each `update()` sets incoming species with the
+low-level COPASI API (`CMetab.setInitialConcentration` + a single
+`model.updateInitialValues(...)` state-sync) and reads them back with per-metabolite
+`getConcentration()` — **~500× faster** than looping `basico.set_species` /
+`get_species` per name (which rebuilds a DataFrame through basico's global-model
+indirection on every call). So the set/get marshalling is only ~¼ of an `update()`;
+the COPASI solve dominates. There is no slower mode to opt out of — don't wrap
+`basico.set_species` around this process.
+
 Config: `model_source` (str), `time` (float, default 1.0), `intervals` (int, default 10),
 `species_units` (`'concentration'` | `'amount'`, default `'concentration'`).
 
