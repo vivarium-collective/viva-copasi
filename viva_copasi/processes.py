@@ -763,11 +763,25 @@ class CopasiUTCProcess(Process, BaseCopasi):
             if self.species_units() == SPECIES_UNITS_CONCENTRATION
             else _get_transient_amount
         )
-        species_concentrations = {
+        final_concentrations = {
             sbml_id: read(
                 name=self.sbml_to_name[sbml_id],
                 dm=self.dm
             )
+            for sbml_id in self.species_ids
+        }
+
+        # `species_concentrations` is a map[float] output, and process-bigraph
+        # ADDS an update to the stored value. The store holds the concentrations
+        # at the START of this interval (initial_state, then the accumulated
+        # trajectory). Returning the absolute end-of-interval values therefore
+        # reported a species as start+end and fed that wrong value back into
+        # COPASI next tick — a non-zero initial doubled after step 1 (#31).
+        # Return the CHANGE over the interval (final - start) so the store ends
+        # at the correct absolute value, as TelluriumProcess does.
+        start_conc = inputs.get("species_concentrations") or {}
+        species_concentrations = {
+            sbml_id: final_concentrations[sbml_id] - float(start_conc.get(sbml_id, 0.0))
             for sbml_id in self.species_ids
         }
 

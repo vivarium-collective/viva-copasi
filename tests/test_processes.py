@@ -790,13 +790,51 @@ def test_copasi_steady_state_step_is_idempotent(core):
 
 
 def test_copasi_utc_process_remains_stateful(core):
-    """The Process variant is intentionally stateful across intervals: its
-    reset-on-update must NOT be applied here (#28 guard)."""
+    """The Process variant is intentionally stateful across intervals. Driven the
+    way the composite does — feeding the accumulated species_concentrations store
+    back each tick — the absolute concentration keeps decaying (#28 guard).
+
+    (species_concentrations is a map[float] output, so the store ADDS each
+    update; the process returns the per-interval CHANGE — see #31.)"""
     proc = CopasiUTCProcess(
         config={'model_source': DECAY_MODEL, 'time': 5.0, 'intervals': 1},
         core=core,
     )
-    first = proc.update(proc.initial_state(), interval=5.0)['species_concentrations']['S']
-    second = proc.update({}, interval=5.0)['species_concentrations']['S']
-    # Decay continues from the previous end-state, so the second update is lower.
+    store = dict(proc.initial_state()['species_concentrations'])  # {'S': 1.0}
+    d1 = proc.update({'species_concentrations': dict(store)}, interval=5.0)['species_concentrations']
+    store = {k: store.get(k, 0.0) + v for k, v in d1.items()}
+    first = store['S']
+    d2 = proc.update({'species_concentrations': dict(store)}, interval=5.0)['species_concentrations']
+    store = {k: store.get(k, 0.0) + v for k, v in d2.items()}
+    second = store['S']
+    # Decay continues from the previous end-state, so the accumulated state drops.
     assert second < first
+
+
+def test_copasi_utc_process_returns_change_not_absolute(core):
+    """#31: species_concentrations is a map[float] output, and process-bigraph
+    ADDS an update to the stored value. The UTC process must return the CHANGE
+    over the interval, not the absolute end state — otherwise a non-zero initial
+    doubles and the wrong value is fed back next tick.
+
+    decay.xml is dS/dt = -0.5*S with S(0) = 1, so S(1) = exp(-0.5) ~ 0.6065.
+    Applying the update to the start store (the map[float] accumulate) must land
+    at the decayed value (< 1), not initial + final."""
+    import math
+
+    proc = CopasiUTCProcess(
+        config={'model_source': DECAY_MODEL, 'time': 1.0, 'n_points': 2},
+        core=core,
+    )
+    out = proc.update(
+        {'species_concentrations': {'S': 1.0}, 'species_counts': {}},
+        interval=1.0,
+    )
+    delta = out['species_concentrations']['S']
+    # S decays, so the change over the interval is negative.
+    assert delta < 0.0, f"expected a negative change for a decaying species, got {delta}"
+    # map[float] accumulate: start + update == S(1), not doubled.
+    new_store = 1.0 + delta
+    assert new_store == pytest.approx(math.exp(-0.5), abs=1e-3), (
+        f"store should land at exp(-0.5)~0.6065 after one interval, got {new_store}"
+    )
