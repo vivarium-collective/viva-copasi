@@ -501,6 +501,13 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
         # prior behavior) or 'amount' (particle number). Applies to the
         # `species_concentrations` values; explicit `selections` are verbatim.
         'species_units': {'_type': 'string', '_default': SPECIES_UNITS_CONCENTRATION},
+        # Reaction flux reporting (#26). Default True preserves prior behavior.
+        # When False, the get_reactions() flux-assembly block is skipped entirely
+        # and `fluxes` is emitted as {}. On Linux, basico.get_reactions segfaults
+        # after a Tellurium/libroadrunner step shares the process (both statically
+        # link their own libSBML), so a tellurium+COPASI co-sim sets this False to
+        # avoid the crash path without any upstream change.
+        'report_fluxes': {'_type': 'boolean', '_default': True},
     }
 
     def initialize(self, config=None):
@@ -621,13 +628,18 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
         # 4) Steady-state reaction fluxes.
         # Reaction ids come straight from the frame we fetch here (a model may
         # legitimately have no reactions -> None, #27), not from a value cached
-        # at load time (#26).
-        rxn_df = get_reactions(model=self.dm)
-        reaction_fluxes_ss = (
-            {}
-            if rxn_df is None
-            else {rid: float(rxn_df.loc[rid, 'flux']) for rid in rxn_df.index}
-        )
+        # at load time (#26). Skipped entirely when report_fluxes is False, so a
+        # Linux tellurium+COPASI co-sim never hits the get_reactions segfault
+        # (#26); fluxes is then emitted as an empty map.
+        if self.config.get("report_fluxes", True):
+            rxn_df = get_reactions(model=self.dm)
+            reaction_fluxes_ss = (
+                {}
+                if rxn_df is None
+                else {rid: float(rxn_df.loc[rid, 'flux']) for rid in rxn_df.index}
+            )
+        else:
+            reaction_fluxes_ss = {}
 
         # 5) Package as one-point "time series" (t = 0.0) to match Tellurium
         time_list = [0.0]
@@ -687,6 +699,13 @@ class CopasiUTCProcess(Process, BaseCopasi):
         # (default, prior behavior) or 'amount' (particle number). Same key name
         # / semantics as the viva-tellurium sibling (#14).
         'species_units': {'_type': 'string', '_default': SPECIES_UNITS_CONCENTRATION},
+        # Reaction flux reporting (#26). Default True preserves prior behavior
+        # (a get_reactions() call every tick). When False, that call is skipped
+        # entirely and `fluxes` is emitted as {}. On Linux, basico.get_reactions
+        # segfaults once a Tellurium/libroadrunner step shares the process (both
+        # statically link their own libSBML), so a per-tick tellurium+COPASI
+        # co-sim sets this False to avoid the crash path, with no upstream change.
+        'report_fluxes': {'_type': 'boolean', '_default': True},
     }
 
     def initialize(self, config=None):
@@ -787,15 +806,21 @@ class CopasiUTCProcess(Process, BaseCopasi):
 
         # --- 4) Reaction fluxes (COPASI reaction IDs already match SBML IDs) ----
         # Ids come from the frame fetched here, not a load-time cache (#26, #27).
-        rxn_df = get_reactions(model=self.dm)
-        reaction_fluxes = (
-            {}
-            if rxn_df is None
-            else {
-                rxn_id: float(rxn_df.loc[rxn_id, "flux"])
-                for rxn_id in rxn_df.index
-            }
-        )
+        # Skipped entirely when report_fluxes is False, so a per-tick Linux
+        # tellurium+COPASI co-sim never reaches the get_reactions segfault (#26);
+        # fluxes is then emitted as an empty map.
+        if self.config.get("report_fluxes", True):
+            rxn_df = get_reactions(model=self.dm)
+            reaction_fluxes = (
+                {}
+                if rxn_df is None
+                else {
+                    rxn_id: float(rxn_df.loc[rxn_id, "flux"])
+                    for rxn_id in rxn_df.index
+                }
+            )
+        else:
+            reaction_fluxes = {}
 
         return {
             "species_concentrations": species_concentrations,

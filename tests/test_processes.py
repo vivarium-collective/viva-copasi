@@ -838,3 +838,110 @@ def test_copasi_utc_process_returns_change_not_absolute(core):
     assert new_store == pytest.approx(math.exp(-0.5), abs=1e-3), (
         f"store should land at exp(-0.5)~0.6065 after one interval, got {new_store}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #26 — report_fluxes gates the per-tick / per-solve get_reactions call.
+# On Linux, basico.get_reactions segfaults once a Tellurium/libroadrunner step
+# shares the process (both statically link their own libSBML), so a real
+# tellurium+COPASI co-sim crashes. report_fluxes=False skips the get_reactions
+# flux-assembly block entirely and emits fluxes as {} — avoiding the crash path
+# with no upstream change. Default True preserves the prior behavior.
+# ---------------------------------------------------------------------------
+
+def test_copasi_utc_process_report_fluxes_false_emits_empty(core):
+    """report_fluxes=False: fluxes is {} and species_concentrations still present
+    and correct (#26). decay.xml is dS/dt=-0.5*S, S(0)=1 -> S(1)=exp(-0.5)."""
+    import math
+
+    proc = CopasiUTCProcess(
+        config={
+            'model_source': DECAY_MODEL, 'time': 1.0, 'n_points': 2,
+            'report_fluxes': False,
+        },
+        core=core,
+    )
+    out = proc.update(
+        {'species_concentrations': {'S': 1.0}, 'species_counts': {}},
+        interval=1.0,
+    )
+    assert out['fluxes'] == {}
+    # species_concentrations still produced: the per-interval change lands at S(1).
+    assert 1.0 + out['species_concentrations']['S'] == pytest.approx(
+        math.exp(-0.5), abs=1e-3
+    )
+
+
+def test_copasi_utc_process_report_fluxes_false_skips_get_reactions(core, monkeypatch):
+    """report_fluxes=False must NOT call get_reactions (the segfault source, #26)."""
+    import viva_copasi.processes as processes
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("get_reactions must not be called when report_fluxes=False")
+
+    monkeypatch.setattr(processes, 'get_reactions', _boom)
+
+    proc = CopasiUTCProcess(
+        config={
+            'model_source': DECAY_MODEL, 'time': 1.0, 'n_points': 2,
+            'report_fluxes': False,
+        },
+        core=core,
+    )
+    out = proc.update(
+        {'species_concentrations': {'S': 1.0}, 'species_counts': {}},
+        interval=1.0,
+    )
+    assert out['fluxes'] == {}
+
+
+def test_copasi_utc_process_report_fluxes_defaults_true(core):
+    """Default (no report_fluxes) still reports fluxes — prior behavior (#26)."""
+    proc = CopasiUTCProcess(
+        config={'model_source': TEST_MODEL, 'time': 1.0, 'intervals': 5},
+        core=core,
+    )
+    out = proc.update(proc.initial_state(), interval=1.0)
+    assert len(out['fluxes']) > 0
+
+
+def test_copasi_steady_state_report_fluxes_false_emits_empty(core):
+    """report_fluxes=False on the steady-state step: fluxes is {} while
+    species_concentrations are still reported (#26)."""
+    step = CopasiSteadyStateStep(
+        config={'model_source': TEST_MODEL, 'report_fluxes': False},
+        core=core,
+    )
+    results = step.update({})['results']
+    assert results['fluxes'] == {}
+    assert len(results['species_concentrations']) > 0
+    for sid, vals in results['species_concentrations'].items():
+        assert len(vals) == 1
+        assert isinstance(vals[0], float)
+
+
+def test_copasi_steady_state_report_fluxes_false_skips_get_reactions(core, monkeypatch):
+    """report_fluxes=False on the steady-state step must NOT call get_reactions (#26)."""
+    import viva_copasi.processes as processes
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("get_reactions must not be called when report_fluxes=False")
+
+    monkeypatch.setattr(processes, 'get_reactions', _boom)
+
+    step = CopasiSteadyStateStep(
+        config={'model_source': TEST_MODEL, 'report_fluxes': False},
+        core=core,
+    )
+    results = step.update({})['results']
+    assert results['fluxes'] == {}
+
+
+def test_copasi_steady_state_report_fluxes_defaults_true(core):
+    """Default (no report_fluxes) still reports steady-state fluxes (#26)."""
+    step = CopasiSteadyStateStep(
+        config={'model_source': TEST_MODEL},
+        core=core,
+    )
+    results = step.update({})['results']
+    assert len(results['fluxes']) > 0
