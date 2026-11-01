@@ -12,6 +12,8 @@ from pathlib import Path
 from process_bigraph import allocate_core
 from basico import get_task_settings, T
 
+from basico import load_model_from_string
+
 from viva_copasi.processes import (
     BaseCopasi,
     CopasiUTCStep,
@@ -945,3 +947,215 @@ def test_copasi_steady_state_report_fluxes_defaults_true(core):
     )
     results = step.update({})['results']
     assert len(results['fluxes']) > 0
+
+
+# ---------------------------------------------------------------------------
+# First-class model ports — model_in (input) / model_out (output), SBML text.
+# Mirrors viva-tellurium #12 (COPASI has the identical get_sbml() gap): SBML
+# models become first-class data objects wired between steps ("run to steady
+# state -> change a parameter -> continue", "simulate a little -> check ->
+# continue"). The wire payload is SBML text (round-trips model structure +
+# current values; resets integrator internal state, accepted).
+#
+# The shared contract (identical in both repos):
+#   * input port  model_in: 'maybe[string]' — a non-empty string loads the model
+#     FROM that SBML text, taking PRECEDENCE over config model_source. Absent/
+#     None/empty -> behavior exactly as today (load from model_source).
+#   * config key  emit_model_out: boolean (default False).
+#   * output port model_out: 'string' — declared ONLY when emit_model_out is
+#     True; value is the SBML serialization of the model AFTER this update ran.
+# Default off => zero change to existing composites.
+# ---------------------------------------------------------------------------
+
+
+def test_get_sbml_helper_serializes_current_model(core):
+    """BaseCopasi.get_sbml() returns valid SBML text that parses back."""
+    step = CopasiUTCStep(
+        config={'model_source': DECAY_MODEL, 'time': 1.0, 'n_points': 2},
+        core=core,
+    )
+    sbml = step.get_sbml()
+    assert isinstance(sbml, str)
+    assert sbml.lstrip().startswith('<')
+    assert load_model_from_string(sbml) is not None
+
+
+def test_model_out_absent_by_default_utc_step(core):
+    """Without emit_model_out: outputs() has NO model_out and update() returns
+    none — existing documents are unaffected (default off)."""
+    step = CopasiUTCStep(
+        config={'model_source': TEST_MODEL, 'time': 5.0, 'n_points': 6},
+        core=core,
+    )
+    assert 'model_out' not in step.outputs()
+    out = step.update({'species_counts': {}, 'species_concentrations': {}})
+    assert 'model_out' not in out
+
+
+def test_model_out_declared_when_emit_enabled_utc_step(core):
+    """emit_model_out=True declares the model_out output port."""
+    step = CopasiUTCStep(
+        config={
+            'model_source': TEST_MODEL, 'time': 5.0, 'n_points': 6,
+            'emit_model_out': True,
+        },
+        core=core,
+    )
+    assert step.outputs().get('model_out') == 'string'
+
+
+def test_model_in_input_port_declared(core):
+    """model_in is a maybe[string] input on every model-bearing class."""
+    for cls, kw in (
+        (CopasiUTCStep, {'time': 1.0, 'n_points': 2}),
+        (CopasiSteadyStateStep, {}),
+        (CopasiUTCProcess, {'time': 1.0, 'intervals': 5}),
+    ):
+        inst = cls(config={'model_source': TEST_MODEL, **kw}, core=core)
+        assert inst.inputs().get('model_in') == 'maybe[string]'
+
+
+def test_model_out_roundtrips_as_model_in_utc_step(core):
+    """(a) round-trip: a step with emit_model_out runs so species change; the
+    emitted model_out parses back AND, fed as model_in to a second step, the
+    loaded (initial) species equal the first step's END state — i.e. "simulate a
+    little -> continue". decay.xml is dS/dt=-0.5*S, S(0)=1 => S(1)=exp(-0.5)."""
+    import math
+
+    s1 = CopasiUTCStep(
+        config={
+            'model_source': DECAY_MODEL, 'time': 1.0, 'n_points': 2,
+            'emit_model_out': True,
+        },
+        core=core,
+    )
+    out1 = s1.update({'species_counts': {}})
+    assert 'model_out' in out1
+    sbml = out1['model_out']
+    assert sbml.lstrip().startswith('<')
+    # parses back as a valid model
+    assert load_model_from_string(sbml) is not None
+
+    s_idx = out1['result']['columns'].index('S')
+    end_s = out1['result']['values'][-1][s_idx]
+    assert end_s == pytest.approx(math.exp(-0.5), abs=1e-3)
+
+    # Feed model_out as model_in to a FRESH step (its own model_source is the
+    # unperturbed decay model, S0=1). output_times=[0.0] reports the loaded
+    # initial state, which must equal the first step's END state.
+    s2 = CopasiUTCStep(
+        config={'model_source': DECAY_MODEL, 'output_times': [0.0]},
+        core=core,
+    )
+    out2 = s2.update({'model_in': sbml, 'species_counts': {}})
+    s2_idx = out2['result']['columns'].index('S')
+    loaded_s = out2['result']['values'][0][s2_idx]
+    assert loaded_s == pytest.approx(end_s, abs=1e-6)
+
+
+def test_model_in_takes_precedence_over_model_source_utc_step(core):
+    """(b) precedence: model_source = model X (repressilator, no 'S' species) but
+    model_in = model Y (decay, has 'S') => loads Y."""
+    decay_sbml = Path(DECAY_MODEL).read_text(encoding='utf-8')
+    step = CopasiUTCStep(
+        config={'model_source': TEST_MODEL, 'output_times': [0.0]},
+        core=core,
+    )
+    out = step.update({'model_in': decay_sbml, 'species_counts': {}})
+    # Species maps were rebuilt from Y.
+    assert step.species_ids == ['S']
+    cols = out['result']['columns']
+    assert 'S' in cols
+    assert 'PX' not in cols  # a repressilator (model X) SBML id
+
+
+def test_model_in_absent_leaves_behavior_unchanged_utc_step(core):
+    """(c) model_in absent/None/empty => identical to today."""
+    base = CopasiUTCStep(
+        config={'model_source': DECAY_MODEL, 'time': 5.0, 'n_points': 2},
+        core=core,
+    ).update({'species_counts': {}})['result']['values'][-1]
+
+    for absent in ({'species_counts': {}},
+                   {'species_counts': {}, 'model_in': None},
+                   {'species_counts': {}, 'model_in': ''}):
+        got = CopasiUTCStep(
+            config={'model_source': DECAY_MODEL, 'time': 5.0, 'n_points': 2},
+            core=core,
+        ).update(absent)['result']['values'][-1]
+        assert got == pytest.approx(base)
+
+
+def test_steady_state_model_out_roundtrip(core):
+    """Steady-state step: emit model_out, and feeding it back as model_in
+    reproduces the same steady state — "run to steady state -> ... -> continue"."""
+    s1 = CopasiSteadyStateStep(
+        config={'model_source': TEST_MODEL, 'emit_model_out': True},
+        core=core,
+    )
+    out1 = s1.update({})
+    assert 'model_out' in out1
+    sbml = out1['model_out']
+    assert sbml.lstrip().startswith('<')
+    assert load_model_from_string(sbml) is not None
+    ss1 = out1['results']['species_concentrations']
+
+    s2 = CopasiSteadyStateStep(config={'model_source': TEST_MODEL}, core=core)
+    out2 = s2.update({'model_in': sbml})
+    ss2 = out2['results']['species_concentrations']
+    for sid in ss1:
+        assert ss2[sid][0] == pytest.approx(ss1[sid][0], rel=1e-4)
+
+
+def test_steady_state_model_out_absent_by_default(core):
+    """Steady-state step default off: no model_out port, none in the return."""
+    step = CopasiSteadyStateStep(config={'model_source': TEST_MODEL}, core=core)
+    assert 'model_out' not in step.outputs()
+    assert 'model_out' not in step.update({})
+
+
+def test_utc_process_model_out_does_not_disturb_species_delta(core):
+    """UTC Process: emit_model_out adds model_out WITHOUT disturbing the #31
+    species_concentrations delta (map[float] accumulate)."""
+    import math
+
+    proc = CopasiUTCProcess(
+        config={
+            'model_source': DECAY_MODEL, 'time': 1.0, 'n_points': 2,
+            'emit_model_out': True,
+        },
+        core=core,
+    )
+    assert proc.outputs().get('model_out') == 'string'
+    out = proc.update(
+        {'species_concentrations': {'S': 1.0}, 'species_counts': {}},
+        interval=1.0,
+    )
+    assert 'model_out' in out
+    assert out['model_out'].lstrip().startswith('<')
+    # #31 delta logic intact: start + delta lands at exp(-0.5), not doubled.
+    delta = out['species_concentrations']['S']
+    assert delta < 0.0
+    assert 1.0 + delta == pytest.approx(math.exp(-0.5), abs=1e-3)
+
+
+def test_utc_process_model_in_precedence(core):
+    """UTC Process: model_in overrides config model_source and rebuilds maps."""
+    decay_sbml = Path(DECAY_MODEL).read_text(encoding='utf-8')
+    proc = CopasiUTCProcess(
+        config={'model_source': TEST_MODEL, 'time': 1.0, 'intervals': 1},
+        core=core,
+    )
+    proc.update({'model_in': decay_sbml, 'species_counts': {}}, interval=1.0)
+    assert proc.species_ids == ['S']
+
+
+def test_utc_process_model_out_absent_by_default(core):
+    """UTC Process default off: no model_out port, none in the return."""
+    proc = CopasiUTCProcess(
+        config={'model_source': TEST_MODEL, 'time': 1.0, 'intervals': 5},
+        core=core,
+    )
+    assert 'model_out' not in proc.outputs()
+    out = proc.update(proc.initial_state(), interval=1.0)
+    assert 'model_out' not in out
