@@ -176,7 +176,27 @@ class BaseCopasi:
         # ---- Load COPASI model ----
         # model_source may be a path/URL or raw SBML/COPASI model text (#15).
         self.dm = _load_model_source(model_source)
+        self._build_model_maps()
 
+    def load_model_from_text(self, sbml_text: str) -> None:
+        """Load the model from raw SBML/COPASI TEXT arriving on the ``model_in``
+        port, replacing whatever ``interpret_sbml`` loaded from ``model_source``.
+
+        Routes through the same ``_load_model_source`` path #15 added for raw
+        model content (leading ``<``), then rebuilds ``self.dm`` / ``self.cmodel``
+        / the species maps and re-snapshots the initial state via
+        :meth:`_build_model_maps`, so a subsequent reset reflects THIS model, not
+        the config one. Mirrors the viva-tellurium sibling's model_in path."""
+        self.dm = _load_model_source(sbml_text)
+        self._build_model_maps()
+
+    def _build_model_maps(self) -> None:
+        """Post-load wiring shared by :meth:`interpret_sbml` (config
+        ``model_source``) and :meth:`load_model_from_text` (the ``model_in``
+        port), so both produce identical internal state.
+
+        Captures the COPASI model handle, the SBML-id <-> COPASI-name species
+        maps, and the initial-state snapshot."""
         self.cmodel = self.dm.getModel()
 
         # A valid ODE model may have NO species (only parameters + rate rules),
@@ -212,6 +232,43 @@ class BaseCopasi:
         # variants can reset to it before each firing (#28). Captured here, used
         # only by the Steps' reset — the stateful Process variant never resets.
         self._snapshot_initial_state()
+
+    # -----------------------------------------------------------------
+    # First-class model ports (model_in / model_out), SBML text.
+    # Mirrors viva-tellurium #12: an SBML model is a first-class data object
+    # wired between steps. The payload is SBML text; it round-trips model
+    # structure + current values (and resets integrator internal state).
+    # -----------------------------------------------------------------
+    def get_sbml(self) -> str:
+        """Serialize the current COPASI model to SBML text — the ``model_out``
+        payload and the symmetric partner of the viva-tellurium ``get_sbml()``.
+
+        COPASI exposes no ``get_sbml()`` of its own, so this wraps the
+        ``CDataModel.exportSBMLToString()`` export. Because ``update()`` runs its
+        time course / steady-state solve with ``update_model=True``, the model's
+        initial state is the run's END state by the time this is called, so the
+        exported SBML carries the end-state values — exactly what the ``model_in``
+        port consumes to continue a run."""
+        return self.dm.exportSBMLToString()
+
+    def _maybe_load_model_in(self, inputs) -> None:
+        """If ``inputs`` carries a non-empty ``model_in`` string, load the model
+        from it (taking precedence over the config ``model_source``). Absent /
+        None / empty -> no-op, so behavior is exactly as before the port existed.
+        Call at the START of ``update()``, before any reset, so the reset and
+        subsequent solve operate on the provided model."""
+        model_in = (inputs or {}).get('model_in')
+        if model_in:
+            self.load_model_from_text(model_in)
+
+    def _maybe_emit_model_out(self, update: Dict[str, Any]) -> Dict[str, Any]:
+        """Add ``model_out`` (current SBML serialization) to an ``update`` return
+        dict ONLY when ``emit_model_out`` is configured True — the "emitted only
+        when the port is declared" rule, so default-off composites are unchanged.
+        """
+        if self.config.get('emit_model_out'):
+            update['model_out'] = self.get_sbml()
+        return update
 
     def get_concentrations_from_sbml(self) -> Dict[str, Any]:
         return {
@@ -343,6 +400,10 @@ class CopasiUTCStep(Step, BaseCopasi):
         # `selections` are given — those are reported verbatim. Same key name /
         # semantics as the viva-tellurium sibling (#14).
         'species_units': {'_type': 'string', '_default': SPECIES_UNITS_CONCENTRATION},
+        # First-class model ports: when True, declare the model_out output port
+        # and emit the post-update SBML serialization on it. Default False keeps
+        # existing composites unchanged. Mirrors viva-tellurium #12.
+        'emit_model_out': {'_type': 'boolean', '_default': False},
     }
 
     def initialize(self, config=None):
@@ -371,14 +432,26 @@ class CopasiUTCStep(Step, BaseCopasi):
         return {
             'species_concentrations': 'map[float]',
             'species_counts': 'map[float]',
+            # First-class model port: a non-empty SBML string loads the model
+            # from it (precedence over model_source). Absent -> unchanged.
+            'model_in': 'maybe[string]',
         }
 
     def outputs(self):
-        return {
+        out = {
             'result': 'numeric_result',
         }
+        # model_out is declared only when opted in, so default documents are
+        # unaffected (outputs() reads self.config).
+        if self.config.get('emit_model_out'):
+            out['model_out'] = 'string'
+        return out
 
     def update(self, inputs):
+        # model_in port: a provided SBML string replaces the config model
+        # BEFORE the reset/snapshot, so the snapshot reflects the provided model.
+        self._maybe_load_model_in(inputs)
+
         # A zero-time Step is a pure function of its inputs: reset the model to
         # its configured initial state so each firing starts fresh, rather than
         # continuing from the previous run's end-state (#28).
@@ -434,7 +507,7 @@ class CopasiUTCStep(Step, BaseCopasi):
                 "columns": columns,
                 "values": tc[columns].values.tolist(),
             }
-            return {"result": result}
+            return self._maybe_emit_model_out({"result": result})
 
         # --- Run COPASI time course with intervals = n_points - 1 ---
         # species_units (#18): concentration (basico default) vs amount
@@ -460,7 +533,7 @@ class CopasiUTCStep(Step, BaseCopasi):
             # "n_spacial_dimensions": tc.shape,
         }
 
-        return {"result": result}
+        return self._maybe_emit_model_out({"result": result})
 
 
 class CopasiSteadyStateStep(Step, BaseCopasi):
@@ -508,6 +581,10 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
         # link their own libSBML), so a tellurium+COPASI co-sim sets this False to
         # avoid the crash path without any upstream change.
         'report_fluxes': {'_type': 'boolean', '_default': True},
+        # First-class model ports: when True, declare the model_out output port
+        # and emit the post-solve SBML serialization. Default False keeps
+        # existing composites unchanged. Mirrors viva-tellurium #12.
+        'emit_model_out': {'_type': 'boolean', '_default': False},
     }
 
     def initialize(self, config=None):
@@ -564,18 +641,29 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
         return {
             'species_concentrations': 'map[float]',  # SBML IDs
             'counts': 'map[float]',          # SBML IDs
+            # First-class model port: a non-empty SBML string loads the model
+            # from it (precedence over model_source). Absent -> unchanged.
+            'model_in': 'maybe[string]',
         }
 
     def outputs(self):
         # Match TelluriumSteadyStateStep: nested results
-        return {
+        out = {
             'results': 'any',
         }
+        # model_out declared only when opted in (outputs() reads self.config).
+        if self.config.get('emit_model_out'):
+            out['model_out'] = 'string'
+        return out
 
     # ------------------------------------------------
     # steady-state update
     # ------------------------------------------------
     def update(self, inputs):
+        # model_in port: a provided SBML string replaces the config model BEFORE
+        # the reset/snapshot, so the snapshot reflects the provided model.
+        self._maybe_load_model_in(inputs)
+
         # Zero-time Step: reset to the configured initial state so repeated
         # firings are a pure function of the inputs (#28). run_steadystate with
         # update_model=True otherwise leaves the model at the solved state, so a
@@ -666,7 +754,7 @@ class CopasiSteadyStateStep(Step, BaseCopasi):
                 selection_json[sel] = [float(v)] if v is not None else [None]
             results["selections"] = selection_json
 
-        return {"results": results}
+        return self._maybe_emit_model_out({"results": results})
 
 
 class CopasiUTCProcess(Process, BaseCopasi):
@@ -706,6 +794,10 @@ class CopasiUTCProcess(Process, BaseCopasi):
         # statically link their own libSBML), so a per-tick tellurium+COPASI
         # co-sim sets this False to avoid the crash path, with no upstream change.
         'report_fluxes': {'_type': 'boolean', '_default': True},
+        # First-class model ports: when True, declare the model_out output port
+        # and emit the post-interval SBML serialization. Default False keeps
+        # existing composites unchanged. Mirrors viva-tellurium #12.
+        'emit_model_out': {'_type': 'boolean', '_default': False},
     }
 
     def initialize(self, config=None):
@@ -731,19 +823,32 @@ class CopasiUTCProcess(Process, BaseCopasi):
         return {
             "species_concentrations": "map[float]",  # SBML IDs
             "species_counts": "map[float]",          # SBML IDs
+            # First-class model port: a non-empty SBML string loads the model
+            # from it (precedence over model_source). Absent -> unchanged.
+            "model_in": "maybe[string]",
         }
 
     def outputs(self):
-        return {
+        out = {
             "species_concentrations": "map[float]",  # SBML IDs
             "fluxes": "map[float]",
             "time": "list[float]",
         }
+        # model_out declared only when opted in (outputs() reads self.config).
+        if self.config.get('emit_model_out'):
+            out["model_out"] = "string"
+        return out
 
     # -----------------------------------------------------------------
     # update
     # -----------------------------------------------------------------
     def update(self, inputs, interval):
+        # model_in port: a provided SBML string loads the model (precedence over
+        # model_source) before this interval runs, rebuilding the species maps.
+        # The per-tick Process never resets, so continuity comes from either the
+        # accumulated store or a fresh model_in. Absent -> unchanged.
+        self._maybe_load_model_in(inputs)
+
         # --- 1) Determine incoming species map (SBML IDs)
         incoming = (
             inputs.get("species_counts")
@@ -822,11 +927,11 @@ class CopasiUTCProcess(Process, BaseCopasi):
         else:
             reaction_fluxes = {}
 
-        return {
+        return self._maybe_emit_model_out({
             "species_concentrations": species_concentrations,
             "fluxes": reaction_fluxes,
             "time": time,
-        }
+        })
 
 
 class ParameterEstimationStep(Step, BaseCopasi):
