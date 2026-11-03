@@ -6,6 +6,8 @@ into proper pytest tests, plus adds coverage for CopasiUTCProcess.
 Test model: Elowitz 2000 Repressilator (BIOMD0000000012), vendored in
 tests/fixtures/BIOMD0000000012_url.xml.
 """
+import math
+
 import pytest
 from pathlib import Path
 
@@ -1177,13 +1179,13 @@ def test_species_counts_are_applied_by_sbml_id(core):
 
 def test_amount_mode_process_is_refused_until_units_are_reconciled(core):
     """Regression: in amount mode the delta subtracted a concentration start from a particle-number end (the store
-    went 2.0 -> 5.4e24 -> 1.5e49 over two ticks). Until units are reconciled the Process refuses amount mode."""
-    proc = CopasiUTCProcess(
-        config={'model_source': TEST_MODEL, 'time': 1.0, 'intervals': 5, 'species_units': 'amount'},
-        core=core,
-    )
+    went 2.0 -> 5.4e24 -> 1.5e49 over two ticks). Until units are reconciled the Process refuses amount mode, at
+    construction, so a misconfigured composite fails when it is built rather than on its first tick."""
     with pytest.raises(ValueError, match="amount"):
-        proc.update(proc.initial_state(), interval=1.0)
+        CopasiUTCProcess(
+            config={'model_source': TEST_MODEL, 'time': 1.0, 'intervals': 5, 'species_units': 'amount'},
+            core=core,
+        )
 
 
 # A minimal SBML model with a boundary species K, which COPASI does not report by default.
@@ -1199,8 +1201,8 @@ BOUNDARY_SBML = """<?xml version="1.0" encoding="UTF-8"?>
       <reaction id="R" reversible="false">
         <listOfReactants><speciesReference species="S"/></listOfReactants>
         <kineticLaw>
-          <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>k</ci></math>
-          <listOfLocalParameters><localParameter id="k" value="0.1"/></listOfLocalParameters>
+          <math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>k</ci><ci>S</ci></apply></math>
+          <listOfParameters><parameter id="k" value="0.1"/></listOfParameters>
         </kineticLaw>
       </reaction>
     </listOfReactions>
@@ -1212,8 +1214,19 @@ BOUNDARY_SBML = """<?xml version="1.0" encoding="UTF-8"?>
 def test_boundary_species_are_reported(core):
     """Regression: species that COPASI leaves out of the time course (boundary or unchanging) were dropped from the
     output columns. The model's own species set must all be reported."""
-    step = CopasiUTCStep(config={'model_source': BOUNDARY_SBML, 'time': 1.0, 'n_points': 2}, core=core)
-    result = step.update(step.initial_state())
-    columns = result['result']['columns']
+    n_points = 5
+    step = CopasiUTCStep(config={'model_source': BOUNDARY_SBML, 'time': 1.0, 'n_points': n_points}, core=core)
+    result = step.update(step.initial_state())['result']
+    columns = result['columns']
     assert 'K' in columns, f"boundary species K missing from {columns}"
     assert 'S' in columns
+    rows = result['values']
+    assert len(rows) == len(result['time']) == n_points
+    k = [row[columns.index('K')] for row in rows]
+    s = [row[columns.index('S')] for row in rows]
+    # K is a boundary species at its initial concentration and nothing changes it.
+    assert k == pytest.approx([2.0] * n_points)
+    # S decays as 1 * exp(-0.1 t): finite, strictly decreasing, and on the analytic curve.
+    assert all(math.isfinite(v) for v in s)
+    assert all(a > b for a, b in zip(s, s[1:]))
+    assert s == pytest.approx([math.exp(-0.1 * t) for t in result['time']], rel=1e-4)

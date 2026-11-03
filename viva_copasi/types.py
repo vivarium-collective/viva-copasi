@@ -1,9 +1,10 @@
 """Custom bigraph-schema types for viva-copasi.
 
 ``standard_types`` is the table compose-api's runner registers (``COMPOSE_RUNNER_TYPES`` names
-``viva_copasi:standard_types``). Its ``numeric_result`` is the result shape the steps emit (``time``, ``columns``,
-``values``), with each field overwritten rather than accumulated, so a result replaces the one before it. The same
-shape is pbsim_common's ``numeric_result``, so the two packages' results are interchangeable on the wire.
+``viva_copasi.types:standard_types``; the package root does not export it). Its ``numeric_result`` is the result
+shape the steps emit (``time``, ``columns``, ``values``), with each field overwritten rather than accumulated, so a
+result replaces the one before it. The same shape is pbsim_common's ``numeric_result``, so the two packages' results
+are interchangeable on the wire.
 """
 
 standard_types = {
