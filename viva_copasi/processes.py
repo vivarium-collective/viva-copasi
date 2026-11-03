@@ -796,9 +796,9 @@ class CopasiUTCProcess(Process, BaseCopasi):
         'relative_tolerance': 'maybe[float]',
         'absolute_tolerance': 'maybe[float]',
         'step_size': 'maybe[float]',
-        # Units for the species_concentrations output (#18): 'concentration'
-        # (default, prior behavior) or 'amount' (particle number). Same key name
-        # / semantics as the viva-tellurium sibling (#14).
+        # Units for the species_concentrations output (#18). Same key name as the
+        # viva-tellurium sibling (#14), but only 'concentration' is accepted here:
+        # 'amount' is refused in initialize() until the per-tick delta's units agree.
         'species_units': {'_type': 'string', '_default': SPECIES_UNITS_CONCENTRATION},
         # Reaction flux reporting (#26). Default True preserves prior behavior
         # (a get_reactions() call every tick). When False, that call is skipped
@@ -814,6 +814,13 @@ class CopasiUTCProcess(Process, BaseCopasi):
     }
 
     def initialize(self, config=None):
+        # Amount mode mixes units: the delta would subtract a concentration start from a particle-number end. Refused
+        # at construction, so a misconfigured composite fails when it is built rather than on its first tick.
+        if self.species_units() != SPECIES_UNITS_CONCENTRATION:
+            raise ValueError(
+                "CopasiUTCProcess supports species_units='concentration' only; amount mode mixes concentration starts "
+                "with particle-number ends and is not yet supported"
+            )
         self.interpret_sbml()
 
         # ---- Sim parameters ----
@@ -856,13 +863,6 @@ class CopasiUTCProcess(Process, BaseCopasi):
     # update
     # -----------------------------------------------------------------
     def update(self, inputs, interval):
-        # Amount mode mixes units: the delta subtracts a concentration start from a particle-number end. Refused until
-        # the start and end are in the same units.
-        if self.species_units() != SPECIES_UNITS_CONCENTRATION:
-            raise ValueError(
-                "CopasiUTCProcess supports species_units='concentration' only; amount mode mixes concentration starts "
-                "with particle-number ends and is not yet supported"
-            )
         # model_in port: a provided SBML string loads the model (precedence over
         # model_source) before this interval runs, rebuilding the species maps.
         # The per-tick Process never resets, so continuity comes from either the

@@ -106,7 +106,8 @@ the COPASI solve dominates. There is no slower mode to opt out of — don't wrap
 `basico.set_species` around this process.
 
 Config: `model_source` (str), `time` (float, default 1.0), `intervals` (int, default 10),
-`species_units` (`'concentration'` | `'amount'`, default `'concentration'`).
+`species_units` (`'concentration'` only; `'amount'` raises `ValueError` at construction, because the per-tick
+delta would mix concentration starts with particle-number ends).
 
 Outputs: `species_concentrations` (map[float]), `fluxes` (map[float]), `time` (list[float]).
 

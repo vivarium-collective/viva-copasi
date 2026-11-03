@@ -32,4 +32,6 @@ def test_default_path_loads_without_viva_superpowers():
         [sys.executable, "-c", SCRIPT], capture_output=True, text=True, timeout=300
     )
     assert result.returncode == 0, result.stderr[-2000:]
-    assert result.stdout.strip().startswith("ok ")
+    # process-bigraph may print "skipping ... missing optional dep" lines first, depending on what is installed and
+    # cached, so check the script's own final line.
+    assert result.stdout.strip().splitlines()[-1].startswith("ok "), result.stdout[-2000:]
