@@ -459,10 +459,12 @@ class CopasiUTCStep(Step, BaseCopasi):
 
         # Apply incoming concentrations
         spec_data = inputs.get('species_counts', {}) or {}
+        # species_counts is keyed by SBML id; COPASI's setter takes the COPASI name (sbml_to_name). Passing the SBML id
+        # silently skipped every species whose COPASI name differs (the repressilator's PX).
         changes = [
-            (name, float(value))
-            for name, value in spec_data.items()
-            if name in self.species_ids
+            (self.sbml_to_name[sbml_id], float(value))
+            for sbml_id, value in spec_data.items()
+            if sbml_id in self.species_ids
         ]
 
         if changes:
@@ -522,6 +524,17 @@ class CopasiUTCStep(Step, BaseCopasi):
             **time_kwargs,
             **self.timecourse_option_kwargs(),
         )
+
+        # COPASI's time course reports only the species that change. Boundary and unchanging species are in the model but
+        # absent from it; report them as constant columns, so every species of the model appears in the output.
+        read = (
+            _get_transient_concentration
+            if self.species_units() == SPECIES_UNITS_CONCENTRATION
+            else _get_transient_amount
+        )
+        for sbml_id in self.species_ids:
+            if sbml_id not in tc.columns:
+                tc[sbml_id] = read(name=self.sbml_to_name[sbml_id], dm=self.dm)
 
         # Time series
         time_list = tc.index.to_list()
@@ -843,6 +856,13 @@ class CopasiUTCProcess(Process, BaseCopasi):
     # update
     # -----------------------------------------------------------------
     def update(self, inputs, interval):
+        # Amount mode mixes units: the delta subtracts a concentration start from a particle-number end. Refused until
+        # the start and end are in the same units.
+        if self.species_units() != SPECIES_UNITS_CONCENTRATION:
+            raise ValueError(
+                "CopasiUTCProcess supports species_units='concentration' only; amount mode mixes concentration starts "
+                "with particle-number ends and is not yet supported"
+            )
         # model_in port: a provided SBML string loads the model (precedence over
         # model_source) before this interval runs, rebuilding the species maps.
         # The per-tick Process never resets, so continuity comes from either the

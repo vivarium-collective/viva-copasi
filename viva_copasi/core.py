@@ -19,7 +19,30 @@ every Process/Step subclass defined in them.
 from __future__ import annotations
 
 from process_bigraph import allocate_core
-from viva_superpowers.core_compose import register_package_processes
+from process_bigraph.emitter import RAMEmitter
+
+from viva_copasi.processes import (
+    CopasiSteadyStateStep,
+    CopasiUTCProcess,
+    CopasiUTCStep,
+    ParameterEstimationStep,
+)
+from viva_copasi.types import register_copasi_types
+
+
+def register_processes(core):
+    """Register this package's process/step classes and the RAM emitter as named registry links.
+
+    Explicit, not discovered: the default path needs no dashboard tooling (viva_superpowers pins bigraph-schema>=1.8.2,
+    which conflicts with compose-api's 1.8.1 core). Idempotent: re-registering a name replaces it with the same class.
+    """
+    core.register_link("CopasiUTCStep", CopasiUTCStep)
+    core.register_link("CopasiSteadyStateStep", CopasiSteadyStateStep)
+    core.register_link("CopasiUTCProcess", CopasiUTCProcess)
+    core.register_link("ParameterEstimationStep", ParameterEstimationStep)
+    core.register_link("RAMEmitter", RAMEmitter)
+    core.register_link("ram-emitter", RAMEmitter)
+    return core
 
 
 def build_core(core=None):
@@ -35,10 +58,10 @@ def build_core(core=None):
     # the composites/visualization import chain.
     if 'any' not in core.registry:
         core.register_type('any', {'_inherit': 'tree'})
-    if 'numeric_result' not in core.registry:
-        core.register_type('numeric_result', {'_inherit': 'tree'})
+    # numeric_result and numeric_results come from the package's standard_types table (the same table compose-api's
+    # runner registers), so both paths resolve identically.
+    register_copasi_types(core)
     # Register THIS repo's own process/step classes as first-class, browsable
     # Registry entries (a composite that instantiates a process directly does
     # NOT auto-register it by name).
-    register_package_processes(core, "viva_copasi")
-    return core
+    return register_processes(core)

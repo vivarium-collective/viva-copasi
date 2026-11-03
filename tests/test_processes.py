@@ -1159,3 +1159,61 @@ def test_utc_process_model_out_absent_by_default(core):
     assert 'model_out' not in proc.outputs()
     out = proc.update(proc.initial_state(), interval=1.0)
     assert 'model_out' not in out
+
+
+# ---------------------------------------------------------------------------
+# Regressions for the compose-api onboarding audit (fix/onboarding-compose-contract)
+# ---------------------------------------------------------------------------
+
+def test_species_counts_are_applied_by_sbml_id(core):
+    """Regression: species_counts is keyed by SBML id, but the setter was given the SBML id where COPASI expects the
+    species name. For the repressilator, PX (named 'LacI protein' in COPASI) was silently skipped with a warning, so its
+    trajectory stayed at 0."""
+    step = CopasiUTCStep(config={'model_source': TEST_MODEL, 'time': 1.0, 'n_points': 2}, core=core)
+    result = step.update({'species_counts': {'PX': 1000.0}})
+    px = result['result']['values'][0][result['result']['columns'].index('PX')]
+    assert px == pytest.approx(1000.0)
+
+
+def test_amount_mode_process_is_refused_until_units_are_reconciled(core):
+    """Regression: in amount mode the delta subtracted a concentration start from a particle-number end (the store
+    went 2.0 -> 5.4e24 -> 1.5e49 over two ticks). Until units are reconciled the Process refuses amount mode."""
+    proc = CopasiUTCProcess(
+        config={'model_source': TEST_MODEL, 'time': 1.0, 'intervals': 5, 'species_units': 'amount'},
+        core=core,
+    )
+    with pytest.raises(ValueError, match="amount"):
+        proc.update(proc.initial_state(), interval=1.0)
+
+
+# A minimal SBML model with a boundary species K, which COPASI does not report by default.
+BOUNDARY_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level2/version4" level="2" version="4">
+  <model id="boundary_test">
+    <listOfCompartments><compartment id="c" size="1"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialConcentration="1" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="K" compartment="c" initialConcentration="2" hasOnlySubstanceUnits="false" boundaryCondition="true" constant="false"/>
+    </listOfSpecies>
+    <listOfReactions>
+      <reaction id="R" reversible="false">
+        <listOfReactants><speciesReference species="S"/></listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>k</ci></math>
+          <listOfLocalParameters><localParameter id="k" value="0.1"/></listOfLocalParameters>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+"""
+
+
+def test_boundary_species_are_reported(core):
+    """Regression: species that COPASI leaves out of the time course (boundary or unchanging) were dropped from the
+    output columns. The model's own species set must all be reported."""
+    step = CopasiUTCStep(config={'model_source': BOUNDARY_SBML, 'time': 1.0, 'n_points': 2}, core=core)
+    result = step.update(step.initial_state())
+    columns = result['result']['columns']
+    assert 'K' in columns, f"boundary species K missing from {columns}"
+    assert 'S' in columns
