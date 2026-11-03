@@ -20,14 +20,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from process_bigraph import allocate_core
-from process_bigraph.emitter import RAMEmitter
-
-from viva_copasi.processes import (
-    CopasiUTCStep,
-    CopasiSteadyStateStep,
-    CopasiUTCProcess,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -195,23 +187,18 @@ def register_copasi(core=None):
     Also registers 'any' and 'numeric_result' as tree-based schema types so
     composite wiring works for processes that use these output types.
     """
-    if core is None:
-        core = allocate_core()
-    # Register schema types used by COPASI process outputs.
-    # 'any' and 'numeric_result' are not in bigraph-schema's BASE_TYPES;
-    # registering them as tree aliases allows composite wiring to resolve them.
-    if 'any' not in core.registry:
-        core.register_type('any', {'_inherit': 'tree'})
-    if 'numeric_result' not in core.registry:
-        core.register_type('numeric_result', {'_inherit': 'tree'})
-    # Register process and emitter links.
-    core.register_link('CopasiUTCStep', CopasiUTCStep)
-    core.register_link('CopasiSteadyStateStep', CopasiSteadyStateStep)
-    core.register_link('CopasiUTCProcess', CopasiUTCProcess)
-    core.register_link('RAMEmitter', RAMEmitter)
-    core.register_link('ram-emitter', RAMEmitter)
-    # Register Visualization Steps so composites can wire them by name.
-    from viva_copasi.visualizations import SpeciesConcentrationsPlot
+    # Types and process/emitter links: the same registration build_core() does (one list, one place).
+    from viva_copasi.core import build_core
+
+    core = build_core(core)
+    # Visualization Steps are dashboard-only and need viva-superpowers (the `dashboard` extra). Without it they are
+    # left unregistered; any other ImportError is a real defect and propagates.
+    try:
+        from viva_copasi.visualizations import SpeciesConcentrationsPlot
+    except ModuleNotFoundError as exc:
+        if exc.name is None or not exc.name.startswith("viva_superpowers"):
+            raise
+        return core
     core.register_link('SpeciesConcentrationsPlot', SpeciesConcentrationsPlot)
     return core
 

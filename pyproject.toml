@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "viva-copasi"
-version = "0.1.2"
+version = "0.2.0"
 description = "process-bigraph-compatible COPASI Steps and Processes (UTC + SteadyState)"
 readme = "README.md"
 license = { text = "MIT" }
@@ -14,12 +14,15 @@ dependencies = [
     "bigraph-schema",
     "copasi-basico",
     "python-copasi",
-    "viva-superpowers",
     "pyyaml",
+    "numpy",
+    "pandas",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "bigraph-viz", "matplotlib"]
+# Dashboard visualizations only. Not needed by the simulation path (see tests/test_no_superpowers.py).
+dashboard = ["viva-superpowers"]
+dev = ["pytest", "bigraph-viz", "matplotlib", "viva-superpowers"]
 
 [tool.uv.sources]
 # viva-superpowers (renamed from pbg-superpowers) is git-only, not on PyPI.
