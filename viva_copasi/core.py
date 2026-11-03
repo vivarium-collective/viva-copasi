@@ -56,10 +56,8 @@ def build_core(core=None):
     # documented build_core() core resolves the wiring too. Inlined (not
     # imported from viva_copasi.composites) to keep build_core independent of
     # the composites/visualization import chain.
-    if 'any' not in core.registry:
-        core.register_type('any', {'_inherit': 'tree'})
-    # numeric_result and numeric_results come from the package's standard_types table (the same table compose-api's
-    # runner registers), so both paths resolve identically.
+    # 'any', numeric_result and numeric_results come from the package's standard_types table (the same table
+    # compose-api's runner registers), so both paths resolve identically.
     register_copasi_types(core)
     # Register THIS repo's own process/step classes as first-class, browsable
     # Registry entries (a composite that instantiates a process directly does

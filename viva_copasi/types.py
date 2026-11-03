@@ -7,6 +7,8 @@ shape is pbsim_common's ``numeric_result``, so the two packages' results are int
 """
 
 standard_types = {
+    # CopasiSteadyStateStep and ParameterEstimationStep emit 'any', which bigraph-schema does not register.
+    "any": {"_inherit": "tree"},
     "numeric_result": {
         "time": "overwrite[list[float]]",
         "columns": "overwrite[list[string]]",
