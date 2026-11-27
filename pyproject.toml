@@ -12,6 +12,8 @@ requires-python = ">=3.11"
 dependencies = [
     "process-bigraph>=1.8.5",
     "bigraph-schema",
+    # Shared uniform-time-course / steady-state Step contract.
+    "engine-core @ git+https://github.com/vivarium-collective/engine-core.git@main",
     "copasi-basico",
     "python-copasi",
     "pyyaml",

@@ -22,6 +22,7 @@ from process_bigraph import allocate_core
 from process_bigraph.emitter import RAMEmitter
 
 from viva_copasi.processes import (
+    CopasiFullReportUTCStep,
     CopasiSteadyStateStep,
     CopasiUTCProcess,
     CopasiUTCStep,
@@ -37,6 +38,7 @@ def register_processes(core):
     which conflicts with compose-api's 1.8.1 core). Idempotent: re-registering a name replaces it with the same class.
     """
     core.register_link("CopasiUTCStep", CopasiUTCStep)
+    core.register_link("CopasiFullReportUTCStep", CopasiFullReportUTCStep)
     core.register_link("CopasiSteadyStateStep", CopasiSteadyStateStep)
     core.register_link("CopasiUTCProcess", CopasiUTCProcess)
     core.register_link("ParameterEstimationStep", ParameterEstimationStep)
