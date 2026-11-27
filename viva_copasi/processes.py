@@ -20,6 +20,8 @@ from basico import (
     set_species,
 )
 
+from engine_core import UniformTimeCourseStep
+
 from viva_copasi.parameter_estimation import (
     estimate,
     build_experiment_dataframe,
@@ -1072,3 +1074,66 @@ class ParameterEstimationStep(Step, BaseCopasi):
             'resim_rmsd': resim,
             'solution': result['solution'],
         }
+
+
+class CopasiFullReportUTCStep(UniformTimeCourseStep):
+    """One-shot uniform time course via basico/COPASI, reporting the FULL variable set.
+
+    Unlike :class:`CopasiUTCStep` (species-only, time-coupled), this one-shot Step
+    drives basico directly and emits the SED-ML report's full set — floating-species
+    **concentrations** AND reaction **fluxes**, each keyed by its SBML id — while
+    conforming to the shared ``engine_core`` uniform-time-course contract
+    (runtime ``model_source`` / ``time`` / ``n_points`` inputs → canonical
+    ``{result: {time, columns, values}}``). This is the engine-specific capability a
+    multi-simulator comparison harness needs (matching the BioSimulators COPASI
+    reference, which reports fluxes too); it previously lived as an adapter inside
+    viva-biomodels and now belongs with the COPASI wrapper so any consumer can reuse
+    it. Constant parameters/compartments are completed by the consumer downstream.
+
+    ``outputs()`` keeps the ``numeric_result`` type (a ``tree`` alias registered by
+    this package's ``build_core``) that the base's ``tree`` would otherwise relax,
+    so existing composite wiring is unchanged.
+    """
+
+    def outputs(self) -> Dict[str, str]:
+        return {"result": "numeric_result"}
+
+    def simulate(self, model_source, time, n_points):
+        load_model(model_source)
+        sp = get_species()
+        rx = get_reactions()
+
+        # (output_selection token, canonical sbml-id) pairs, kept aligned.
+        # - get_species()/get_reactions() return None for a model with no species /
+        #   no reactions (rule-only or reaction-less models) — guard against that.
+        # - Select species by their COPASI display_name, not the index name: when
+        #   two species share a display name across compartments COPASI
+        #   disambiguates them ("H2O2{phagosome}"), so a bare "[H2O2]" selection
+        #   resolves to nothing and the whole run is lost. display_name equals the
+        #   plain name when unique, so single-compartment models are unaffected.
+        pairs: list[tuple[str, str]] = [("Time", "time")]
+        if sp is not None:
+            sp_names = sp["display_name"] if "display_name" in sp.columns else sp.index
+            for name, sid in zip(sp_names, sp["sbml_id"]):
+                pairs.append((f"[{name}]", str(sid)))
+        if rx is not None:
+            for name, sid in zip(rx.index, rx["sbml_id"]):
+                pairs.append((f"({name}).Flux", str(sid)))
+
+        selection = [sel for sel, _ in pairs]
+        df = run_time_course_with_output(
+            output_selection=selection,
+            duration=float(time),
+            intervals=n_points - 1,
+            use_initial_values=True,
+        )
+        # Keep only the columns COPASI actually produced, preserving the
+        # selection↔sbml-id alignment; a token COPASI could not resolve is dropped
+        # rather than raising a KeyError that discards the whole run.
+        keep = [(sel, oid) for sel, oid in pairs if sel in df.columns]
+        df = df[[sel for sel, _ in keep]]
+        rows = df.values.tolist()
+        time_list = [r[0] for r in rows]
+        columns = [oid for _, oid in keep[1:]]  # drop the leading Time/time pair
+        values = [r[1:] for r in rows]
+        return time_list, columns, values
