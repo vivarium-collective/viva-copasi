@@ -20,6 +20,7 @@ from viva_copasi.composites import (
     load_composite_spec,
     build_composite,
     register_copasi,
+    make_copasi_document,
     make_copasi_utc_process_document,
     make_copasi_steady_state_document,
     _COMPOSITES_DIR,
@@ -148,6 +149,45 @@ def test_utc_process_composite_emitter(core):
     # Each row should have species_concentrations
     row = rows[0]
     assert 'species_concentrations' in row or 'fluxes' in row
+
+
+# ---------------------------------------------------------------------------
+# make_copasi_document — the symmetric partner of make_tellurium_document
+# ---------------------------------------------------------------------------
+
+def test_make_copasi_document_well_formed():
+    """The symmetric builder wires the incremental species loop (input AND output
+    to the same store) and accepts SBML text or a file path."""
+    doc = make_copasi_document(model="<sbml/>", model_format="sbml", interval=0.1)
+    c = doc['copasi']
+    assert c['address'] == 'local:CopasiUTCProcess'
+    # the incremental loop: species flows out to the store AND back in
+    assert c['inputs']['species_concentrations'] == ['stores', 'species']
+    assert c['outputs']['species_concentrations'] == ['stores', 'species']
+    assert c['config']['model_source'] == "<sbml/>"
+    assert 'species' in doc['stores'] and 'fluxes' in doc['stores']
+    # model_file is an alternative to model
+    assert make_copasi_document(model_file="/tmp/m.xml")['copasi']['config']['model_source'] == "/tmp/m.xml"
+
+
+def test_make_copasi_document_rejects_antimony_and_empty():
+    """basico has no antimony reader; and a model is required."""
+    with pytest.raises(ValueError, match="antimony"):
+        make_copasi_document(model="x", model_format="antimony")
+    with pytest.raises(ValueError, match="needs a model"):
+        make_copasi_document()
+
+
+def test_make_copasi_document_runs(core):
+    """End-to-end: the builder's document integrates the bundled model and
+    carries species state across ticks (the incremental loop works)."""
+    doc = make_copasi_document(model_file=BUNDLED_MODEL, interval=1.0, intervals=1)
+    sim = Composite({'state': doc}, core=core)
+    sim.run(3.0)
+    species = sim.state['stores']['species']
+    assert isinstance(species, dict) and len(species) >= 3
+    # concentrations stay finite and non-negative (state carried, not blown up)
+    assert all(v == v and v >= -1e-9 for v in species.values())
 
 
 # ---------------------------------------------------------------------------
