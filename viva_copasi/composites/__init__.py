@@ -136,6 +136,108 @@ def make_copasi_utc_process_document(
     }
 
 
+def make_copasi_document(
+    model: str = '',
+    model_format: str = 'sbml',
+    model_file: str = '',
+    *,
+    species_overrides: dict | None = None,
+    interval: float = 1.0,
+    intervals: int = 1,
+    species_units: str = 'concentration',
+    report_fluxes: bool = True,
+):
+    """Create a composite document for a COPASI (basico) simulation.
+
+    The symmetric partner of ``viva_tellurium.make_tellurium_document``: author a
+    model once, get back a dict ready for ``Composite()``. COPASI's
+    ``CopasiUTCProcess`` is an *incremental* per-tick process — it reads the
+    species back each tick and advances its own model with ``update_model=True`` —
+    so this wires the ``species_concentrations`` input and output to the SAME
+    store. Without that loop the integrator's start-of-interval values would not
+    carry forward and the run would diverge. (The lower-level
+    :func:`make_copasi_utc_process_document` exposes the raw wiring; this adds the
+    tellurium-parallel signature, SBML-text input, and an interval/intervals split.)
+
+    Args:
+        model: raw SBML (or COPASI-XML) model text. COPASI reads SBML natively;
+            there is no antimony front-end here — convert antimony to SBML first
+            (e.g. ``tellurium.loada(ant).getSBML()``).
+        model_format: ``'sbml'`` or ``'copasi'``. ``'antimony'`` raises, with a
+            pointer to convert first (basico has no antimony reader).
+        model_file: path or URL to an SBML/COPASI model, as an alternative to
+            ``model``.
+        species_overrides: optional ``{species_id: initial_concentration}`` seed
+            for the species store; an empty store is also correct because the
+            process returns per-tick deltas off the model's own initial values.
+        interval: model-time advanced per process update (the process ``interval``).
+        intervals: internal integration sub-steps per update (1 ⇒ one step per
+            interval, matching ``make_tellurium_document``).
+        species_units: ``'concentration'`` (default) or ``'amount'``.
+        report_fluxes: emit per-reaction fluxes each tick.
+
+    Returns:
+        dict: Composite document with CopasiUTCProcess, stores, and emitter.
+    """
+    fmt = (model_format or 'sbml').lower()
+    if fmt == 'antimony':
+        raise ValueError(
+            "make_copasi_document reads SBML/COPASI, not antimony (basico has no "
+            "antimony reader). Convert first, e.g. tellurium.loada(ant).getSBML(), "
+            "then pass model=<sbml>, model_format='sbml'."
+        )
+    model_source = model or model_file
+    if not model_source:
+        raise ValueError(
+            "make_copasi_document needs a model: pass model=<SBML text> or "
+            "model_file=<path/url>."
+        )
+    return {
+        'copasi': {
+            '_type': 'process',
+            'address': 'local:CopasiUTCProcess',
+            'config': {
+                'model_source': model_source,
+                'time': interval,
+                'intervals': intervals,
+                'species_units': species_units,
+                'report_fluxes': report_fluxes,
+            },
+            'interval': interval,
+            # Incremental UTC loop: species flows out to the store AND back in.
+            'inputs': {'species_concentrations': ['stores', 'species']},
+            'outputs': {
+                'species_concentrations': ['stores', 'species'],
+                'fluxes': ['stores', 'fluxes'],
+                'time': ['stores', 'time'],
+            },
+        },
+        'stores': {
+            'species': dict(species_overrides or {}),
+            'fluxes': {},
+            'time': [],
+        },
+        'emitter': {
+            '_type': 'step',
+            'address': 'local:RAMEmitter',
+            'config': {
+                'emit': {
+                    'species': 'map[float]',
+                    'fluxes': 'map[float]',
+                    'time': 'list[float]',
+                    'global_time': 'float',
+                },
+            },
+            'inputs': {
+                'species': ['stores', 'species'],
+                'fluxes': ['stores', 'fluxes'],
+                'time': ['stores', 'time'],
+                'global_time': ['global_time'],
+            },
+        },
+    }
+
+
 def make_copasi_steady_state_document(
     model_source: str = '',
 ):
